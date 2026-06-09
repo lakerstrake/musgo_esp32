@@ -42,6 +42,11 @@ Anota la URL del worker (ej: https://musgo-worker.yourdomain.workers.dev)
    - Usa `npm run web:build` como comando de build y `web/dist` como carpeta de publicación.
    - No uses `npx wrangler deploy` como comando de Pages; esa instrucción es solo para el Worker.
    - Define una variable de entorno `PUBLIC_API_URL` con la URL del Worker (ej: `https://musgo-worker.../api/data`).
+   - Si quieres despliegue automático desde GitHub, usa el workflow `.github/workflows/publish-pages.yml`.
+   - Añade estos secrets en GitHub:
+     - `CF_ACCOUNT_ID`
+     - `CF_PAGES_API_TOKEN`
+     - `CF_PAGES_PROJECT_NAME`
 
 5) Flujo de datos:
    - El ESP32 hace POST de JSON a `/api/data` cada ~2s.
