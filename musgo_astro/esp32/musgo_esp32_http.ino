@@ -1,9 +1,12 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 
 // Ajustes de red
 const char* ssid = "UNAL"; // red abierta
-const char* serverUrl = "https://TUDOMINIO.workers.dev/api/data"; // <- reemplaza por tu endpoint Cloudflare Worker
+// Reemplaza por la URL real de tu Worker (la imprime `wrangler deploy`):
+const char* serverUrl = "https://musgoesp32.TU-SUBDOMINIO.workers.dev/api/data";
+const char* deviceId  = "musgo-01"; // identificador de este dispositivo
 
 // Pines y calibración (mismo código original)
 const bool MODO_PRUEBA = false;
@@ -90,13 +93,16 @@ void actualizarReproductor() {
 
 void enviarDato(float h, int estado) {
   if (WiFi.status() != WL_CONNECTED) return;
+  WiFiClientSecure client;
+  client.setInsecure(); // *.workers.dev usa TLS válido; omitimos validar el certificado (sin ello fallaría)
   HTTPClient http;
-  http.begin(serverUrl);
+  http.begin(client, serverUrl);
   http.addHeader("Content-Type", "application/json");
 
   String payload = "{";
   payload += "\"humidity\":" + String(h, 0) + ",";
   payload += "\"state\":" + String(estado) + ",";
+  payload += "\"device\":\"" + String(deviceId) + "\",";
   payload += "\"ts\":" + String(millis());
   payload += "}";
 
@@ -147,6 +153,14 @@ void setup() {
 void loop() {
   unsigned long ahora = millis();
   actualizarReproductor();
+
+  // Reconexión WiFi automática (sin bloquear el resto del loop)
+  static unsigned long tReconexion = 0;
+  if (WiFi.status() != WL_CONNECTED && ahora - tReconexion >= 5000) {
+    tReconexion = ahora;
+    WiFi.disconnect();
+    WiFi.begin(ssid);
+  }
 
   if (ahora - tSensor >= 250) {
     tSensor = ahora;

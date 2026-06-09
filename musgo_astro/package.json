@@ -5,7 +5,8 @@
   "scripts": {
     "web:install": "cd web && npm install",
     "web:build": "cd web && npm install && npm run build",
-    "worker:deploy": "cd worker && npm install --silent && npx wrangler publish",
+    "worker:deploy": "npx wrangler deploy",
+    "worker:dev": "npx wrangler dev",
     "build": "npm run web:build"
   },
   "devDependencies": {

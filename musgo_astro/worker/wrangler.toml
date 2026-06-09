@@ -1,0 +1,12 @@
+# Config para desplegar SOLO el worker desde esta carpeta: `cd worker && npx wrangler deploy`
+# (El deploy desde la raíz usa ../wrangler.toml — mantén ambos coherentes.)
+name = "musgoesp32"
+main = "index.js"
+compatibility_date = "2024-11-01"
+
+account_id = "dac9003257ad1248eac7396e1715b05c"
+
+# Almacenamiento durable opcional (ver ../wrangler.toml para instrucciones):
+# [[kv_namespaces]]
+# binding = "MUSGO_DATA"
+# id = "PEGA_AQUI_EL_ID_DEL_KV"

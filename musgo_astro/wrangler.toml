@@ -1,0 +1,20 @@
+# Configuración del Cloudflare Worker (usado por `npx wrangler deploy`)
+name = "musgoesp32"
+main = "worker/index.js"
+compatibility_date = "2024-11-01"
+
+account_id = "dac9003257ad1248eac7396e1715b05c"
+
+# --- Almacenamiento (opcional) ---
+# El Worker funciona SIN KV (usa memoria + Cache API como respaldo).
+# Para almacenamiento DURABLE entre reinicios, crea un namespace KV:
+#
+#   npx wrangler kv namespace create MUSGO_DATA
+#
+# Copia el `id` que imprime, descomenta el bloque de abajo y pégalo.
+# (O en el dashboard: Workers & Pages > tu worker > Settings > Variables > KV Namespace Bindings,
+#  con el nombre de variable MUSGO_DATA — no necesitas cambiar código.)
+#
+# [[kv_namespaces]]
+# binding = "MUSGO_DATA"
+# id = "PEGA_AQUI_EL_ID_DEL_KV"
