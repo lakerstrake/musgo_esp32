@@ -38,7 +38,9 @@ Anota la URL del worker (ej: https://musgo-worker.yourdomain.workers.dev)
 
 4) Desplegar la web Astro en Cloudflare Pages (opcional):
    - Inicializa el repo en GitHub y sube `web/` y `worker/`.
-   - En Cloudflare Pages, crea un nuevo proyecto, conecta tu repo y usa `npm run build` como comando de build y `dist` como carpeta de publicación.
+   - En Cloudflare Pages, crea un nuevo proyecto y conecta tu repo.
+   - Usa `npm run web:build` como comando de build y `web/dist` como carpeta de publicación.
+   - No uses `npx wrangler deploy` como comando de Pages; esa instrucción es solo para el Worker.
    - Define una variable de entorno `PUBLIC_API_URL` con la URL del Worker (ej: `https://musgo-worker.../api/data`).
 
 5) Flujo de datos:

@@ -1,0 +1,14 @@
+{
+  "name": "musgo_esp32",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "web:install": "cd web && npm install",
+    "web:build": "cd web && npm install && npm run build",
+    "worker:deploy": "cd worker && npm install --silent && npx wrangler publish",
+    "build": "npm run web:build"
+  },
+  "devDependencies": {
+    "wrangler": "^4.99.0"
+  }
+}
