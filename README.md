@@ -41,6 +41,7 @@ Anota la URL del worker (ej: https://musgo-worker.yourdomain.workers.dev)
    - En Cloudflare Pages, crea un nuevo proyecto y conecta tu repo.
    - Usa `npm run web:build` como comando de build y `web/dist` como carpeta de publicación.
    - No uses `npx wrangler deploy` como comando de Pages; esa instrucción es solo para el Worker.
+   - Si tu Pages project aún ejecuta `npx wrangler deploy`, cámbialo a `npm run web:build`.
    - Define una variable de entorno `PUBLIC_API_URL` con la URL del Worker (ej: `https://musgo-worker.../api/data`).
    - Si quieres despliegue automático desde GitHub, usa el workflow `.github/workflows/publish-pages.yml`.
    - Añade estos secrets en GitHub:
