@@ -1,0 +1,10 @@
+name = "musgo-worker"
+main = "index.js"
+
+# Rellena tu account_id de Cloudflare
+account_id = "YOUR_ACCOUNT_ID"
+
+# KV namespace binding
+kv_namespaces = [
+  { binding = "MUSGO_DATA", id = "YOUR_KV_NAMESPACE_ID" }
+]

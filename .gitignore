@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+.vscode/
+.DS_Store
+.idea/
+.venv/
+*.log
+/build/
+/*.code-workspace
+/.pio/
+/.pioenvs/
