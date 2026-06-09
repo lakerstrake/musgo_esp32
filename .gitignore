@@ -10,3 +10,7 @@ dist/
 /*.code-workspace
 /.pio/
 /.pioenvs/
+
+# Astro build artifacts
+web/.astro/
+web/src/env.d.ts
