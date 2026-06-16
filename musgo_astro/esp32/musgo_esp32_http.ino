@@ -2,17 +2,14 @@
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <Wire.h>
-// Sensor ambiental por I2C.  BMP280 = temperatura + presion.
-// BME280 = ademas humedad del AIRE. Pon USAR_BME280 en true si tu modulo es BME280
-// (instala la libreria "Adafruit BME280").
-#define USAR_BME280 false
-#if USAR_BME280
-  #include <Adafruit_BME280.h>
-  Adafruit_BME280 bmp;
-#else
-  #include <Adafruit_BMP280.h>
-  Adafruit_BMP280 bmp;
-#endif
+// Sensor ambiental por I2C con AUTO-DETECCION del chip:
+//   - BME280 -> temperatura + presion + HUMEDAD del aire
+//   - BMP280 -> temperatura + presion (sin humedad: no tiene ese sensor)
+// Instala AMBAS librerias: "Adafruit BMP280" y "Adafruit BME280".
+#include <Adafruit_BMP280.h>
+#include <Adafruit_BME280.h>
+Adafruit_BMP280 bmp;
+Adafruit_BME280 bme;
 
 // ===================== Ajustes de red =====================
 const char* ssid = "UNAL"; // red abierta
@@ -56,8 +53,9 @@ unsigned long tSerial = 0;
 int  estadoAnterior = -1;
 unsigned long tProxAlerta = 0;
 
-// --- Sensor ambiental BMP280 / BME280 ---
+// --- Sensor ambiental BMP280 / BME280 (auto-deteccion) ---
 bool  bmpOK = false;
+bool  usandoBme = false;   // true si el chip es BME280 (mide humedad del aire)
 float tempC = 0, presionHpa = 0, airHumPct = 0;
 unsigned long tBmp = 0;
 
@@ -160,9 +158,7 @@ void enviarDato(float h, int estado, int crudo) {
   if (bmpOK) {
     payload += "\"temp\":" + String(tempC, 1) + ",";
     payload += "\"pressure\":" + String(presionHpa, 1) + ",";
-#if USAR_BME280
-    payload += "\"airHum\":" + String(airHumPct, 0) + ",";
-#endif
+    if (usandoBme) payload += "\"airHum\":" + String(airHumPct, 0) + ",";
   }
   payload += "\"device\":\"" + String(deviceId) + "\",";
   payload += "\"ts\":" + String(millis());
@@ -203,16 +199,19 @@ void setup() {
 
   // Sensor ambiental BMP280 por I2C (SDA=21, SCL=19)
   Wire.begin(PIN_SDA, PIN_SCL);
-  bmpOK = bmp.begin(0x76) || bmp.begin(0x77);     // prueba ambas direcciones
-  if (bmpOK) {
-#if !USAR_BME280
+  // Auto-deteccion: primero BME280 (con humedad del aire), si no BMP280.
+  if (bme.begin(0x76) || bme.begin(0x77)) {
+    usandoBme = true; bmpOK = true;
+    Serial.println("BME280 detectado (temp + presion + humedad del aire)");
+  } else if (bmp.begin(0x76) || bmp.begin(0x77)) {
+    usandoBme = false; bmpOK = true;
     bmp.setSampling(Adafruit_BMP280::MODE_NORMAL, Adafruit_BMP280::SAMPLING_X2,
                     Adafruit_BMP280::SAMPLING_X16, Adafruit_BMP280::FILTER_X16,
                     Adafruit_BMP280::STANDBY_MS_500);
-#endif
-    Serial.println("Sensor ambiental detectado (temp + presion)");
+    Serial.println("BMP280 detectado (temp + presion; SIN humedad del aire por hardware)");
   } else {
-    Serial.println("Sensor ambiental NO detectado -> se omiten temp/presion (revisa cableado/direccion)");
+    bmpOK = false;
+    Serial.println("Sensor ambiental NO detectado (revisa cableado/direccion 0x76 o 0x77)");
   }
 
   ledcAttach(PIN_R, 5000, 8);
@@ -277,11 +276,14 @@ void loop() {
   // Lectura ambiental BMP280 (cambia lento: cada 1 s basta)
   if (bmpOK && ahora - tBmp >= 1000) {
     tBmp = ahora;
-    tempC = bmp.readTemperature();
-    presionHpa = bmp.readPressure() / 100.0f;
-#if USAR_BME280
-    airHumPct = bmp.readHumidity();
-#endif
+    if (usandoBme) {
+      tempC = bme.readTemperature();
+      presionHpa = bme.readPressure() / 100.0f;
+      airHumPct = bme.readHumidity();
+    } else {
+      tempC = bmp.readTemperature();
+      presionHpa = bmp.readPressure() / 100.0f;
+    }
   }
 
   int estado = (humedad < UMBRAL_SECO) ? 0 : (humedad < UMBRAL_HUMEDO ? 1 : 2);
@@ -295,7 +297,10 @@ void loop() {
     Serial.print("Humedad: "); Serial.print(humedad); Serial.print(" %  (ADC ");
     Serial.print(crudoActual); Serial.print(")  -> ");
     Serial.print(estado == 0 ? "SECO" : (estado == 1 ? "MEDIO" : "HUMEDO"));
-    if (bmpOK) { Serial.print("  T="); Serial.print(tempC, 1); Serial.print("C  P="); Serial.print(presionHpa, 1); Serial.print("hPa"); }
+    if (bmpOK) {
+      Serial.print("  T="); Serial.print(tempC, 1); Serial.print("C  P="); Serial.print(presionHpa, 1); Serial.print("hPa");
+      if (usandoBme) { Serial.print("  Haire="); Serial.print(airHumPct, 0); Serial.print("%"); }
+    }
     Serial.println();
   }
 }

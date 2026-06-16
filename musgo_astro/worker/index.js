@@ -130,7 +130,7 @@ export default {
       if (memHistory === null) { const s = await kvGetState(env); memHistory = (s && s.history) || []; }
       const last = memHistory[memHistory.length - 1];
       if (!last || reading.ts - (last.ts || 0) >= HISTORY_MIN_GAP_MS) {
-        memHistory.push({ ts: reading.ts, humidity: reading.humidity, temp: reading.temp, pressure: reading.pressure });
+        memHistory.push({ ts: reading.ts, humidity: reading.humidity, temp: reading.temp, pressure: reading.pressure, airHum: reading.airHum });
         while (memHistory.length > MAX_HISTORY) memHistory.shift();
       }
 
@@ -313,7 +313,12 @@ const DASHBOARD_HTML = `<!doctype html>
       <svg class="chart" id="cPres" viewBox="0 0 300 56" preserveAspectRatio="none"></svg>
       <div class="chartrange"><span id="rPresA">—</span><span id="rPresB">—</span></div>
     </div>
-    <div class="chartnote">💧 musgo (sensor de suelo) · 🌡️ ⏱️ ambiente (BMP280) · en vivo</div>
+    <div class="chartcard hidden" id="airCard">
+      <div class="charthead"><span>💨 Humedad del aire</span><b id="hAir">—</b></div>
+      <svg class="chart" id="cAir" viewBox="0 0 300 56" preserveAspectRatio="none"></svg>
+      <div class="chartrange"><span id="rAirA">—</span><span id="rAirB">—</span></div>
+    </div>
+    <div class="chartnote">💧 musgo (suelo) · 🌡️ ⏱️ ambiente (BMP280) · 💨 aire (solo BME280)</div>
     <div class="meta"><span>Muestras en la nube</span><span id="histCount">—</span></div>
   </section>
 
@@ -479,24 +484,28 @@ function drawChart(svgId,vals,color){
   return {min:min,max:max,last:pts[pts.length-1]};
 }
 // Buffer en vivo en el navegador: las graficas se actualizan en cada lectura.
-var live={hum:[],temp:[],pres:[]}, LIVE_MAX=120;
+var live={hum:[],temp:[],pres:[],air:[]}, LIVE_MAX=120;
 function isNum(v){return typeof v==='number'}
 function pushLive(j){
   if(isNum(j.humidity)){live.hum.push(j.humidity);if(live.hum.length>LIVE_MAX)live.hum.shift()}
   if(isNum(j.temp)){live.temp.push(j.temp);if(live.temp.length>LIVE_MAX)live.temp.shift()}
   if(isNum(j.pressure)){live.pres.push(j.pressure);if(live.pres.length>LIVE_MAX)live.pres.shift()}
+  if(isNum(j.airHum)){live.air.push(j.airHum);if(live.air.length>LIVE_MAX)live.air.shift()}
 }
 function drawCharts(){
   $('histCount').textContent=Math.max(live.hum.length,live.temp.length,live.pres.length);
   var rh=drawChart('cHum',live.hum,'#3fb950');
   var rt=drawChart('cTemp',live.temp,'#e3a23c');
   var rp=drawChart('cPres',live.pres,'#5aa9e6');
+  var ra=drawChart('cAir',live.air,'#5fd0d6');
   if(rh){$('hHum').textContent=rh.last+' %';$('rHumA').textContent='mín '+rh.min+'%';$('rHumB').textContent='máx '+rh.max+'%'}
   else{$('hHum').textContent='—';$('rHumA').textContent='—';$('rHumB').textContent=''}
   if(rt){$('hTemp').textContent=rt.last.toFixed(1)+' °C';$('rTempA').textContent='mín '+rt.min.toFixed(1)+'°';$('rTempB').textContent='máx '+rt.max.toFixed(1)+'°'}
   else{$('hTemp').textContent='sin BMP280';$('rTempA').textContent='conecta el sensor';$('rTempB').textContent=''}
   if(rp){$('hPres').textContent=Math.round(rp.last)+' hPa';$('rPresA').textContent='mín '+Math.round(rp.min);$('rPresB').textContent='máx '+Math.round(rp.max)}
   else{$('hPres').textContent='sin BMP280';$('rPresA').textContent='conecta el sensor';$('rPresB').textContent=''}
+  if(ra){$('airCard').classList.remove('hidden');$('hAir').textContent=ra.last+' %';$('rAirA').textContent='mín '+ra.min+'%';$('rAirB').textContent='máx '+ra.max+'%'}
+  else{$('airCard').classList.add('hidden')}
 }
 function seedLive(){
   fetch('/api/history',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){
@@ -505,6 +514,7 @@ function seedLive(){
       live.hum=it.map(function(x){return x.humidity}).filter(isNum).slice(-LIVE_MAX);
       live.temp=it.map(function(x){return x.temp}).filter(isNum).slice(-LIVE_MAX);
       live.pres=it.map(function(x){return x.pressure}).filter(isNum).slice(-LIVE_MAX);
+      live.air=it.map(function(x){return x.airHum}).filter(isNum).slice(-LIVE_MAX);
     }
     drawCharts();
   }).catch(function(){drawCharts()});
