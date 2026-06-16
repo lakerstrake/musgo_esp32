@@ -92,11 +92,22 @@ void actualizarReproductor() {
 }
 
 void enviarDato(float h, int estado) {
-  if (WiFi.status() != WL_CONNECTED) return;
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[POST] Saltado: WiFi NO conectado");
+    return;
+  }
   WiFiClientSecure client;
-  client.setInsecure(); // *.workers.dev usa TLS válido; omitimos validar el certificado (sin ello fallaría)
+  client.setInsecure();          // *.workers.dev usa TLS valido; no validamos el certificado
+  client.setTimeout(10000);      // 10s para el handshake TLS
+
   HTTPClient http;
-  http.begin(client, serverUrl);
+  http.setReuse(false);
+  http.setConnectTimeout(8000);
+  http.setTimeout(10000);
+  if (!http.begin(client, serverUrl)) {
+    Serial.println("[POST] http.begin() fallo (URL/cliente). URL: " + String(serverUrl));
+    return;
+  }
   http.addHeader("Content-Type", "application/json");
 
   String payload = "{";
@@ -106,13 +117,20 @@ void enviarDato(float h, int estado) {
   payload += "\"ts\":" + String(millis());
   payload += "}";
 
+  Serial.print("[POST] Enviando a "); Serial.print(serverUrl);
+  Serial.print("  RSSI="); Serial.print(WiFi.RSSI());
+  Serial.print("  payload="); Serial.println(payload);
+
   int httpCode = http.POST(payload);
   if (httpCode > 0) {
-    // opcional: leer respuesta
     String resp = http.getString();
-    Serial.println("POST OK: " + String(httpCode) + " -> " + resp);
+    Serial.println("[POST] OK codigo=" + String(httpCode) + " -> " + resp);
+    if (httpCode >= 300 && httpCode < 400) {
+      Serial.println("[POST] AVISO: redireccion -> posible PORTAL CAUTIVO en la red WiFi");
+    }
   } else {
-    Serial.println("POST fallo: " + String(httpCode));
+    Serial.println("[POST] ERROR codigo=" + String(httpCode) + " (" + http.errorToString(httpCode) + ")");
+    Serial.println("       Causas tipicas: TLS fallido, sin salida a Internet, o portal cautivo en 'UNAL'.");
   }
   http.end();
 }
@@ -144,9 +162,14 @@ void setup() {
   }
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("\nWiFi conectado");
-    Serial.print("IP: "); Serial.println(WiFi.localIP());
+    Serial.print("IP: ");      Serial.println(WiFi.localIP());
+    Serial.print("Gateway: "); Serial.println(WiFi.gatewayIP());
+    Serial.print("DNS: ");     Serial.println(WiFi.dnsIP());
+    Serial.print("RSSI: ");    Serial.println(WiFi.RSSI());
+    Serial.println(">>> Prueba de envio inmediata (mira el resultado [POST]):");
+    enviarDato(50, 1);  // POST de prueba al arrancar
   } else {
-    Serial.println("\nNo se conectó a WiFi");
+    Serial.println("\nNo se conecto a WiFi (revisa el nombre de la red 'ssid')");
   }
 }
 
