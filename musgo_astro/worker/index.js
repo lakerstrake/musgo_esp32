@@ -20,11 +20,14 @@ const CORS = {
   'Access-Control-Max-Age': '86400',
 };
 
-const KV_WRITE_INTERVAL_MS = 15000;
+const KV_WRITE_INTERVAL_MS = 15000;   // throttle de escritura a KV (cuota gratis)
+const HISTORY_MIN_GAP_MS = 12000;     // separacion minima entre puntos del historial
+const MAX_HISTORY = 360;              // ~1.5 h de historial (360 x 15s)
 const CACHE_URL = 'https://musgo.internal/latest';
 const DEFAULT_CONFIG = { dryRaw: 2515, wetRaw: 1128 }; // calibracion por defecto (musgo)
 
 let lastKvWrite = 0;
+let memHistory = null;                // serie temporal en memoria del isolate
 let cfgCache = null, cfgCacheT = 0;
 
 function json(data, status = 200) {
@@ -65,10 +68,16 @@ async function cachePut(reading) {
       new Response(JSON.stringify(reading), { headers: { 'Content-Type': 'application/json' } }));
   } catch { /* best-effort */ }
 }
-async function kvGet(env) {
+// KV "state" = { latest, history[] }. Una sola escritura cubre lectura + serie.
+async function kvGetState(env) {
   if (!env.MUSGO_DATA) return null;
-  try { const v = await env.MUSGO_DATA.get('latest'); return v ? JSON.parse(v) : null; }
+  try { const v = await env.MUSGO_DATA.get('state'); return v ? JSON.parse(v) : null; }
   catch { return null; }
+}
+async function kvPutState(env, state) {
+  if (!env.MUSGO_DATA) return false;
+  try { await env.MUSGO_DATA.put('state', JSON.stringify(state)); return true; }
+  catch { return false; }
 }
 
 async function getConfig(env) {
@@ -115,22 +124,36 @@ export default {
       const reading = normalizeReading(raw);
       if (!reading) return json({ ok: false, error: 'Falta "humidity" numérico' }, 422);
 
-      await cachePut(reading);
+      await cachePut(reading); // capa viva por-datacenter
+
+      // Historial: append en memoria, con separacion minima entre puntos.
+      if (memHistory === null) { const s = await kvGetState(env); memHistory = (s && s.history) || []; }
+      const last = memHistory[memHistory.length - 1];
+      if (!last || reading.ts - (last.ts || 0) >= HISTORY_MIN_GAP_MS) {
+        memHistory.push({ ts: reading.ts, humidity: reading.humidity, temp: reading.temp, pressure: reading.pressure });
+        while (memHistory.length > MAX_HISTORY) memHistory.shift();
+      }
+
+      // Persistencia throttled: una sola escritura cubre latest + history.
       let wroteKv = false;
       if (env.MUSGO_DATA && Date.now() - lastKvWrite > KV_WRITE_INTERVAL_MS) {
         lastKvWrite = Date.now();
-        try { await env.MUSGO_DATA.put('latest', JSON.stringify(reading)); wroteKv = true; } catch { /* */ }
+        wroteKv = await kvPutState(env, { latest: reading, history: memHistory });
       }
-      // Devuelve la calibracion para que el ESP32 se ajuste solo.
       return json({ ok: true, kv: wroteKv, config: await getConfig(env) });
     }
 
     if (pathname === '/api/data' && request.method === 'GET') {
       const c = await cacheGet();
       if (c && Date.now() - (c.ts || 0) < 20000) return json(c); // cache fresca: sin tocar KV
-      const k = await kvGet(env);
-      const latest = [c, k].filter(Boolean).sort((a, b) => (b.ts || 0) - (a.ts || 0))[0] || {};
-      return json(latest);
+      const s = await kvGetState(env);
+      return json((s && s.latest) || c || {});
+    }
+
+    if (pathname === '/api/history' && request.method === 'GET') {
+      let items = memHistory;
+      if (items === null) { const s = await kvGetState(env); items = (s && s.history) || []; }
+      return json({ count: items.length, items });
     }
 
     if (pathname === '/' && request.method === 'GET') {
@@ -170,7 +193,7 @@ const DASHBOARD_HTML = `<!doctype html>
   .live{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);border:1px solid var(--line);padding:6px 10px;border-radius:999px;background:var(--panel)}
   .dot{width:8px;height:8px;border-radius:50%;background:#5a6675;transition:.3s}
   nav{display:flex;gap:4px;background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:4px;margin-bottom:16px}
-  nav button{flex:1;border:0;background:transparent;color:var(--muted);font:inherit;font-size:13px;font-weight:550;padding:9px;border-radius:9px;cursor:pointer;transition:.15s}
+  nav button{flex:1;border:0;background:transparent;color:var(--muted);font:inherit;font-size:12px;font-weight:550;padding:8px 5px;border-radius:9px;cursor:pointer;transition:.15s}
   nav button.on{background:var(--panel);color:var(--fg)}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:22px}
   .gauge{display:flex;flex-direction:column;align-items:center;padding:8px 0 6px}
@@ -222,6 +245,12 @@ const DASHBOARD_HTML = `<!doctype html>
   .subnav button{flex:1;border:0;background:transparent;color:var(--muted);font:inherit;font-size:12px;font-weight:550;padding:7px;border-radius:8px;cursor:pointer}
   .subnav button.on{background:var(--panel);color:var(--fg)}
   code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:1px 5px;color:#c9d4de;white-space:nowrap}
+  .chartcard{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+  .charthead{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;font-size:13px;color:#c9d4de}
+  .charthead b{font-size:18px;color:var(--fg);font-weight:700}
+  .chart{width:100%;height:56px;display:block;overflow:visible}
+  .chartrange{display:flex;justify-content:space-between;font-size:10.5px;color:var(--muted);margin-top:5px}
+  .schem{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10px;line-height:1.4;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px;color:#c9d4de;overflow-x:auto;white-space:pre;margin:4px 0}
   footer{margin-top:18px;text-align:center;color:var(--muted);font-size:12px;line-height:1.7}
   footer b{color:var(--fg);font-weight:600}
   .hidden{display:none}
@@ -239,6 +268,7 @@ const DASHBOARD_HTML = `<!doctype html>
 
   <nav>
     <button id="tabMon" class="on" onclick="ver('mon')">Monitor</button>
+    <button id="tabHist" onclick="ver('hist')">Historial</button>
     <button id="tabCal" onclick="ver('cal')">Calibrar</button>
     <button id="tabInfo" onclick="ver('info')">Cómo funciona</button>
   </nav>
@@ -262,6 +292,26 @@ const DASHBOARD_HTML = `<!doctype html>
       <div class="chip" style="border-color:#3a3120"><b style="color:var(--medio)">MEDIO</b>30 – 60 %</div>
       <div class="chip" style="border-color:#20381f"><b style="color:var(--humedo)">HÚMEDO</b>&gt; 60 %</div>
     </div>
+  </section>
+
+  <!-- ===== Historial ===== -->
+  <section id="hist" class="card hidden">
+    <div class="chartcard">
+      <div class="charthead"><span>💧 Humedad</span><b id="hHum">—</b></div>
+      <svg class="chart" id="cHum" viewBox="0 0 300 56" preserveAspectRatio="none"></svg>
+      <div class="chartrange"><span id="rHumA">—</span><span id="rHumB">—</span></div>
+    </div>
+    <div class="chartcard">
+      <div class="charthead"><span>🌡️ Temperatura</span><b id="hTemp">—</b></div>
+      <svg class="chart" id="cTemp" viewBox="0 0 300 56" preserveAspectRatio="none"></svg>
+      <div class="chartrange"><span id="rTempA">—</span><span id="rTempB">—</span></div>
+    </div>
+    <div class="chartcard">
+      <div class="charthead"><span>⏱️ Presión</span><b id="hPres">—</b></div>
+      <svg class="chart" id="cPres" viewBox="0 0 300 56" preserveAspectRatio="none"></svg>
+      <div class="chartrange"><span id="rPresA">—</span><span id="rPresB">—</span></div>
+    </div>
+    <div class="meta"><span>Muestras guardadas en la nube</span><span id="histCount">—</span></div>
   </section>
 
   <!-- ===== Calibrar ===== -->
@@ -368,6 +418,28 @@ const DASHBOARD_HTML = `<!doctype html>
         <li>Un solo comando <code>npx wrangler deploy</code> sube el Worker al <b>edge global</b> de Cloudflare.</li>
         <li><b>HTTPS automático</b> en <code>*.workers.dev</code>; escala solo, sin contenedores ni máquinas virtuales.</li>
       </ol>
+
+      <h2>🔌 Esquemático de conexiones</h2>
+<pre class="schem">                 ESP32 DevKit
+              ┌───────────────┐
+  Humedad ────┤ GPIO34   3V3 ├──── VCC sensores
+  (AOUT)      │              │
+  LED R ──[R]─┤ GPIO25   GND ├──── GND común
+  LED G ──[R]─┤ GPIO26       │
+  LED B ──[R]─┤ GPIO27       │
+  Buzzer + ───┤ GPIO22       │
+  BMP280 SDA ─┤ GPIO21       │
+  BMP280 SCL ─┤ GPIO19       │
+              └───────────────┘
+  [R] = resistencia 220–330 Ω</pre>
+      <table>
+        <tr><th>Componente</th><th>Conexión a la ESP32</th></tr>
+        <tr><td><b>Sensor humedad</b></td><td>VCC→3V3 · GND→GND · AOUT→<code>GPIO34</code></td></tr>
+        <tr><td><b>LED RGB</b></td><td>R→<code>25</code> · G→<code>26</code> · B→<code>27</code> · común→3V3*</td></tr>
+        <tr><td><b>Buzzer</b></td><td>+→<code>GPIO22</code> · −→GND</td></tr>
+        <tr><td><b>BMP280</b> (I²C)</td><td>VCC→3V3 · GND→GND · SDA→<code>21</code> · SCL→<code>19</code></td></tr>
+      </table>
+      <p style="margin-top:8px">*LED de <b>ánodo común</b> (por defecto): común→3V3. Si es de <b>cátodo común</b>: común→GND y pon <code>CATODO_COMUN=true</code> en el sketch. Usa resistencias de 220–330 Ω en R/G/B.</p>
     </div>
   </section>
 
@@ -385,10 +457,37 @@ function colorFor(h){return h<30?ESTADOS[0]:h<60?ESTADOS[1]:ESTADOS[2]}
 function relTime(ms){var s=Math.round((Date.now()-ms)/1000);if(s<2)return'ahora';if(s<60)return'hace '+s+'s';return'hace '+Math.round(s/60)+' min'}
 function setOnline(ok){$('status').textContent=ok?'en línea':'sin conexión';$('dot').style.background=ok?'#3fb950':'#f0594b'}
 function ver(t){
-  ['mon','cal','info'].forEach(function(s){$(s).classList.toggle('hidden',s!==t)});
-  $('tabMon').classList.toggle('on',t==='mon');$('tabCal').classList.toggle('on',t==='cal');$('tabInfo').classList.toggle('on',t==='info');
+  ['mon','hist','cal','info'].forEach(function(s){$(s).classList.toggle('hidden',s!==t)});
+  $('tabMon').classList.toggle('on',t==='mon');$('tabHist').classList.toggle('on',t==='hist');
+  $('tabCal').classList.toggle('on',t==='cal');$('tabInfo').classList.toggle('on',t==='info');
   if(t==='cal')loadConfig();
+  if(t==='hist')loadHistory();
   if(t==='info')nivel('bas');
+}
+function drawChart(svgId,vals,color){
+  var el=$(svgId); if(!el)return null;
+  var pts=[]; for(var i=0;i<vals.length;i++){ if(typeof vals[i]==='number')pts.push(vals[i]); }
+  if(pts.length<2){ el.innerHTML=''; return null; }
+  var min=Math.min.apply(null,pts),max=Math.max.apply(null,pts),range=(max-min)||1;
+  var W=300,H=56,n=pts.length,d='';
+  for(var k=0;k<n;k++){ var x=(k/(n-1))*W; var y=H-4-((pts[k]-min)/range)*(H-8); d+=(k?'L':'M')+x.toFixed(1)+' '+y.toFixed(1)+' '; }
+  var area=d+'L300 56 L0 56 Z';
+  el.innerHTML='<path d="'+area+'" fill="'+color+'22"/><path d="'+d+'" fill="none" stroke="'+color+'" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>';
+  return {min:min,max:max,last:pts[pts.length-1]};
+}
+function loadHistory(){
+  fetch('/api/history',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){
+    var it=d.items||[]; $('histCount').textContent=it.length;
+    var rh=drawChart('cHum',it.map(function(x){return x.humidity}),'#3fb950');
+    var rt=drawChart('cTemp',it.map(function(x){return x.temp}),'#e3a23c');
+    var rp=drawChart('cPres',it.map(function(x){return x.pressure}),'#5aa9e6');
+    if(rh){$('hHum').textContent=rh.last+' %';$('rHumA').textContent='mín '+rh.min+'%';$('rHumB').textContent='máx '+rh.max+'%';}
+    else{$('hHum').textContent='—'}
+    if(rt){$('hTemp').textContent=rt.last.toFixed(1)+' °C';$('rTempA').textContent='mín '+rt.min.toFixed(1)+'°';$('rTempB').textContent='máx '+rt.max.toFixed(1)+'°';}
+    else{$('hTemp').textContent='sin datos';$('rTempA').textContent='conecta el BMP280';$('rTempB').textContent=''}
+    if(rp){$('hPres').textContent=Math.round(rp.last)+' hPa';$('rPresA').textContent='mín '+Math.round(rp.min);$('rPresB').textContent='máx '+Math.round(rp.max);}
+    else{$('hPres').textContent='sin datos';$('rPresA').textContent='conecta el BMP280';$('rPresB').textContent=''}
+  }).catch(function(){});
 }
 function nivel(t){
   $('infoBasica').classList.toggle('hidden',t!=='bas');
@@ -442,6 +541,7 @@ function guardar(){
     .catch(function(){msg('Error de red',true)});
 }
 tick();setInterval(tick,1500);setInterval(refreshAgo,1000);
+setInterval(function(){ if(!$('hist').classList.contains('hidden'))loadHistory(); },10000);
 </script>
 </body>
 </html>`;

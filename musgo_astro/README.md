@@ -31,6 +31,9 @@ ESP32 ──HTTPS POST /api/data──▶ Cloudflare Worker (API + dashboard) �
 > librerías **Adafruit BMP280** + **Adafruit Unified Sensor**. Para humedad del aire usa un
 > **BME280** (mismo cableado; ver comentario en el sketch).
 
+📐 **Esquemático completo de todas las conexiones:** ver **[CONEXIONES.md](CONEXIONES.md)**
+(también disponible en el dashboard → pestaña *Cómo funciona* → *Explicación técnica*).
+
 ---
 
 ## 1) Desplegar el Worker (la API)
