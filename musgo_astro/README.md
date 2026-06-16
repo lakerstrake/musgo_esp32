@@ -1,15 +1,35 @@
 # Musgo que respira 🌿
 
-Monitor en línea de un sensor de humedad conectado a un ESP32.
+Monitor en línea de la humedad de un musgo (más temperatura y presión) con un ESP32.
 
 ```
-ESP32  ──POST /api/data──▶  Cloudflare Worker  ◀──GET /api/data──  Web (Astro)
- (sensor + LED + buzzer)        (guarda lectura)                    (dashboard)
+ESP32 ──HTTPS POST /api/data──▶ Cloudflare Worker (API + dashboard) ◀──GET──  Navegador
+ sensor humedad + BMP280            KV (latest, config) + Cache API
+ LED RGB + buzzer + WiFi
 ```
 
-- `esp32/musgo_esp32_http.ino` — sketch que lee el sensor y hace POST de la humedad.
-- `worker/` — Cloudflare Worker: API REST que guarda la última lectura + histórico.
-- `web/` — dashboard Astro que muestra los datos en vivo.
+- `esp32/musgo_esp32_http.ino` — firmware: lee humedad + BMP280, da color/sonido y hace POST.
+- `worker/` — Cloudflare Worker: API REST + dashboard embebido (Monitor / Calibrar / Cómo funciona).
+- `web/` — versión Astro alternativa del panel (la web en vivo la sirve el Worker en `/`).
+
+## Hardware y conexiones
+
+**Sensor de humedad** → `GPIO34` (analógico). **LED RGB** → `25/26/27`. **Buzzer** → `GPIO22`.
+
+**BMP280** (temperatura + presión, por I²C):
+
+| BMP280 | ESP32 |
+|---|---|
+| VCC | 3V3 |
+| GND | GND |
+| SDA | GPIO21 |
+| SCL | GPIO19 |
+| SDO | GND → dirección 0x76 (3V3 → 0x77) |
+| CSB | 3V3 (modo I²C) |
+
+> El I²C usa 21/19 a propósito para no chocar con el buzzer (GPIO22). Requiere las
+> librerías **Adafruit BMP280** + **Adafruit Unified Sensor**. Para humedad del aire usa un
+> **BME280** (mismo cableado; ver comentario en el sketch).
 
 ---
 

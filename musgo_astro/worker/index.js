@@ -39,12 +39,16 @@ function normalizeReading(body) {
   const humidity = Number(body.humidity);
   if (!Number.isFinite(humidity)) return null;
   const num = (v) => (Number.isFinite(Number(v)) ? Math.round(Number(v)) : null);
+  const f1 = (v) => (Number.isFinite(Number(v)) ? Math.round(Number(v) * 10) / 10 : null);
   const state = Number(body.state);
   return {
     humidity: Math.max(0, Math.min(100, Math.round(humidity))),
     state: [0, 1, 2].includes(state) ? state : null,
     raw: num(body.raw),
     rssi: num(body.rssi),
+    temp: f1(body.temp),          // °C (BMP280, opcional)
+    pressure: f1(body.pressure),  // hPa (BMP280, opcional)
+    airHum: num(body.airHum),     // % humedad del aire (BME280, opcional)
     device: typeof body.device === 'string' ? body.device.slice(0, 32) : 'esp32',
     uptime: num(body.ts),
     ts: Date.now(),
@@ -99,7 +103,7 @@ export default {
         const wetRaw = Math.round(Number(raw.wetRaw));
         const inRange = (n) => Number.isFinite(n) && n >= 0 && n <= 4095;
         if (!inRange(dryRaw) || !inRange(wetRaw)) return json({ ok: false, error: 'Valores fuera de rango (0–4095)' }, 422);
-        if (Math.abs(dryRaw - wetRaw) < 50) return json({ ok: false, error: 'Seco y húmedo deben diferir (≥50)' }, 422);
+        if (Math.abs(dryRaw - wetRaw) < 200) return json({ ok: false, error: 'Seco y húmedo deben diferir bastante (≥200). Revisa la captura.' }, 422);
         const cfg = { dryRaw, wetRaw };
         await setConfig(env, cfg);
         return json({ ok: true, config: cfg });
@@ -247,6 +251,11 @@ const DASHBOARD_HTML = `<!doctype html>
       <div id="subline" class="sub">&nbsp;</div>
     </div>
     <div class="spark" id="spark"></div>
+    <div class="readout hidden" id="env" style="margin-top:16px">
+      <div class="ro"><span>🌡️ Temperatura</span><b id="temp">—</b></div>
+      <div class="ro"><span>⏱️ Presión</span><b id="pres">—</b></div>
+      <div class="ro hidden" id="airBox"><span>💧 Hum. aire</span><b id="air">—</b></div>
+    </div>
     <div class="meta"><span>Última lectura</span><span id="ago">—</span></div>
     <div class="legend">
       <div class="chip" style="border-color:#3a2420"><b style="color:var(--seco)">SECO</b>&lt; 30 %</div>
@@ -294,7 +303,7 @@ const DASHBOARD_HTML = `<!doctype html>
 
     <div id="infoBasica">
     <h2>🌱 ¿Qué es?</h2>
-    <p><b>Musgo que respira</b> le da “voz” a una planta de musgo. Un sensor mide cuánta agua tiene el musgo y, según eso, la obra <b>cambia de color, emite sonidos</b> y muestra su estado <b>en vivo por internet</b> en este panel.</p>
+    <p><b>Musgo que respira</b> le da “voz” a una planta de musgo. Un sensor mide cuánta agua tiene el musgo y, según eso, la obra <b>cambia de color, emite sonidos</b> y muestra su estado <b>en vivo por internet</b> en este panel. Un segundo sensor (<b>BMP280</b>) mide la <b>temperatura</b> y la <b>presión</b> del ambiente alrededor del musgo.</p>
 
     <h2>⚙️ ¿Cómo funciona?</h2>
     <ol class="flow">
@@ -319,7 +328,7 @@ const DASHBOARD_HTML = `<!doctype html>
 
     <h2>🧩 Tecnología</h2>
     <div class="tech">
-      <span>ESP32</span><span>Sensor de humedad</span><span>LED RGB</span><span>Buzzer</span>
+      <span>ESP32</span><span>Sensor de humedad</span><span>BMP280 (I²C)</span><span>LED RGB</span><span>Buzzer</span>
       <span>Cloudflare Workers</span><span>KV (nube)</span><span>HTTPS</span><span>HTML/JS</span>
     </div>
     </div><!-- /infoBasica -->
@@ -330,7 +339,7 @@ const DASHBOARD_HTML = `<!doctype html>
 
       <h2>🔁 Flujo de datos (técnico)</h2>
       <ol class="flow">
-        <li><b>Firmware ESP32</b> (Arduino / C++): promedia 16 muestras del ADC, aplica filtro <b>EMA</b>, calcula la humedad con la calibración y hace <b>HTTPS POST</b> a <code>/api/data</code> cada 2 s con un JSON <code>{humidity, state, raw, rssi, ts}</code>. El TLS lo maneja <code>WiFiClientSecure</code>.</li>
+        <li><b>Firmware ESP32</b> (Arduino / C++): promedia 16 muestras del ADC del sensor de humedad, aplica filtro <b>EMA</b>, lee el <b>BMP280</b> por <b>I²C</b> (temperatura y presión) y hace <b>HTTPS POST</b> a <code>/api/data</code> cada 2 s con un JSON <code>{humidity, state, raw, rssi, temp, pressure, ts}</code>. El TLS lo maneja <code>WiFiClientSecure</code>.</li>
         <li>El Worker <b>valida y normaliza</b> la lectura, le pone marca de tiempo del servidor y la guarda en dos capas (ver abajo).</li>
         <li>En la <b>respuesta del POST</b>, el Worker devuelve la calibración <code>{dryRaw, wetRaw}</code>; el ESP32 la aplica y <b>se recalibra en caliente</b> sin reprogramarse.</li>
         <li>Esta página pide <code>GET /api/data</code> cada 1.5 s por <b>fetch (AJAX)</b> y se redibuja sin recargar.</li>
@@ -407,6 +416,11 @@ function tick(){
       $('subline').textContent=bits.join('  ·  ')||'\\u00a0';
       $('rawNow').textContent=currentRaw!=null?currentRaw:'—';
       $('humNow').textContent=h+' %';
+      var hasEnv=(typeof j.temp==='number')||(typeof j.pressure==='number');
+      $('env').classList.toggle('hidden',!hasEnv);
+      if(typeof j.temp==='number')$('temp').textContent=j.temp.toFixed(1)+' °C';
+      if(typeof j.pressure==='number')$('pres').textContent=Math.round(j.pressure)+' hPa';
+      if(typeof j.airHum==='number'){$('airBox').classList.remove('hidden');$('air').textContent=j.airHum+' %'}
       if(j.ts!==lastTs){lastTs=j.ts||Date.now();hist.push(h);if(hist.length>140)hist.shift();drawSpark()}
     }else{$('estado').textContent='sin lecturas todavía'}
   }).catch(function(){setOnline(false)});

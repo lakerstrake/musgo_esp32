@@ -1,6 +1,12 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
+#include <Wire.h>
+#include <Adafruit_BMP280.h>
+// Sensor ambiental BMP280 (temperatura + presion) por I2C.
+// Para BME280 (ademas humedad del aire): instala "Adafruit BME280", cambia el
+// include a <Adafruit_BME280.h>, el objeto a "Adafruit_BME280 bmp;" y añade en
+// el payload:  payload += "\"airHum\":" + String(bmp.readHumidity(), 0) + ",";
 
 // ===================== Ajustes de red =====================
 const char* ssid = "UNAL"; // red abierta
@@ -16,6 +22,10 @@ const int PIN_R      = 25;
 const int PIN_G      = 26;
 const int PIN_B      = 27;
 const int PIN_BUZZER = 22;
+
+// I2C para el sensor ambiental BMP280 (evita el GPIO22 del buzzer)
+const int PIN_SDA = 21;
+const int PIN_SCL = 19;
 
 // true  = buzzer PASIVO  -> tonos reales (recomendado)
 // false = buzzer ACTIVO  -> solo enciende/apaga (se distingue por el ritmo)
@@ -39,6 +49,12 @@ unsigned long tSensor = 0;
 unsigned long tSerial = 0;
 int  estadoAnterior = -1;
 unsigned long tProxAlerta = 0;
+
+// --- BMP280 (temperatura + presion ambiente) ---
+Adafruit_BMP280 bmp;
+bool  bmpOK = false;
+float tempC = 0, presionHpa = 0;
+unsigned long tBmp = 0;
 
 // ===================== Sistema de sonido =====================
 struct Nota { int freq; int dur; };  // freq 0 = silencio, dur 0 = fin
@@ -136,6 +152,10 @@ void enviarDato(float h, int estado, int crudo) {
   payload += "\"state\":" + String(estado) + ",";
   payload += "\"raw\":" + String(crudo) + ",";
   payload += "\"rssi\":" + String(WiFi.RSSI()) + ",";
+  if (bmpOK) {
+    payload += "\"temp\":" + String(tempC, 1) + ",";
+    payload += "\"pressure\":" + String(presionHpa, 1) + ",";
+  }
   payload += "\"device\":\"" + String(deviceId) + "\",";
   payload += "\"ts\":" + String(millis());
   payload += "}";
@@ -147,7 +167,7 @@ void enviarDato(float h, int estado, int crudo) {
     // El servidor devuelve la calibracion: el sensor se reajusta solo.
     long d = extraerEntero(resp, "dryRaw", -1);
     long w = extraerEntero(resp, "wetRaw", -1);
-    if (d >= 0 && d <= 4095 && w >= 0 && w <= 4095 && abs((int)(d - w)) >= 50) {
+    if (d >= 0 && d <= 4095 && w >= 0 && w <= 4095 && abs((int)(d - w)) >= 200) {
       if ((int)d != dryRaw || (int)w != wetRaw) {
         dryRaw = (int)d; wetRaw = (int)w;
         Serial.println("[CAL] Calibracion actualizada desde la web: seco=" + String(dryRaw) + "  humedo=" + String(wetRaw));
@@ -172,6 +192,18 @@ void setup() {
 
   analogReadResolution(12);                       // ADC 0..4095
   analogSetPinAttenuation(PIN_SENSOR, ADC_11db);  // rango completo ~0..3.3V
+
+  // Sensor ambiental BMP280 por I2C (SDA=21, SCL=19)
+  Wire.begin(PIN_SDA, PIN_SCL);
+  bmpOK = bmp.begin(0x76) || bmp.begin(0x77);     // prueba ambas direcciones
+  if (bmpOK) {
+    bmp.setSampling(Adafruit_BMP280::MODE_NORMAL, Adafruit_BMP280::SAMPLING_X2,
+                    Adafruit_BMP280::SAMPLING_X16, Adafruit_BMP280::FILTER_X16,
+                    Adafruit_BMP280::STANDBY_MS_500);
+    Serial.println("BMP280 detectado (temperatura + presion)");
+  } else {
+    Serial.println("BMP280 NO detectado -> se omiten temp/presion (revisa cableado/direccion)");
+  }
 
   ledcAttach(PIN_R, 5000, 8);
   ledcAttach(PIN_G, 5000, 8);
@@ -232,6 +264,13 @@ void loop() {
     if (ahora - lastSend >= 2000) { lastSend = ahora; enviarDato(humedad, estadoActual, crudo); }
   }
 
+  // Lectura ambiental BMP280 (cambia lento: cada 1 s basta)
+  if (bmpOK && ahora - tBmp >= 1000) {
+    tBmp = ahora;
+    tempC = bmp.readTemperature();
+    presionHpa = bmp.readPressure() / 100.0f;
+  }
+
   int estado = (humedad < UMBRAL_SECO) ? 0 : (humedad < UMBRAL_HUMEDO ? 1 : 2);
   if (!melActiva && ahora >= tProxAlerta) {                // se mantiene: repetir alerta
     tocar(sostenidoPorEstado[estado]);
@@ -242,6 +281,8 @@ void loop() {
     tSerial = ahora;
     Serial.print("Humedad: "); Serial.print(humedad); Serial.print(" %  (ADC ");
     Serial.print(crudoActual); Serial.print(")  -> ");
-    Serial.println(estado == 0 ? "SECO" : (estado == 1 ? "MEDIO" : "HUMEDO"));
+    Serial.print(estado == 0 ? "SECO" : (estado == 1 ? "MEDIO" : "HUMEDO"));
+    if (bmpOK) { Serial.print("  T="); Serial.print(tempC, 1); Serial.print("C  P="); Serial.print(presionHpa, 1); Serial.print("hPa"); }
+    Serial.println();
   }
 }
