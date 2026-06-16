@@ -1,11 +1,17 @@
 // Cloudflare Worker — API + dashboard del "Musgo que respira"
 //
-// Almacenamiento en dos capas:
-//   - KV "MUSGO_DATA" (global, consistente entre datacenters): clave "latest".
-//     Escritura throttled cada 15s para respetar la cuota gratis de KV (1000/dia).
-//   - Cache API (por-datacenter, sin limite): lecturas casi en vivo en el mismo colo.
-//   La lectura devuelve la mas reciente entre ambas capas.
-//   El historico (sparkline) lo acumula el navegador desde sus propias lecturas.
+// Almacenamiento (KV "MUSGO_DATA"):
+//   - "latest"  : ultima lectura del sensor (global, consistente entre datacenters).
+//   - "config"  : calibracion { dryRaw, wetRaw } editable desde la web.
+// Capa Cache API por-datacenter para lecturas casi en vivo sin gastar cuota de KV.
+//
+// Endpoints:
+//   GET  /            -> dashboard (Monitor / Calibrar / Como funciona)
+//   GET  /api/data    -> ultima lectura {humidity,state,raw,rssi,device,ts}
+//   POST /api/data    -> guarda lectura; responde { ok, kv, config }
+//   GET  /api/config  -> calibracion actual
+//   POST /api/config  -> fija calibracion { dryRaw, wetRaw }
+//   GET  /api/health  -> estado
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -16,8 +22,10 @@ const CORS = {
 
 const KV_WRITE_INTERVAL_MS = 15000;
 const CACHE_URL = 'https://musgo.internal/latest';
+const DEFAULT_CONFIG = { dryRaw: 2515, wetRaw: 1128 }; // calibracion por defecto (musgo)
 
 let lastKvWrite = 0;
+let cfgCache = null, cfgCacheT = 0;
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -29,53 +37,77 @@ function json(data, status = 200) {
 function normalizeReading(body) {
   if (typeof body !== 'object' || body === null) return null;
   const humidity = Number(body.humidity);
-  const state = Number(body.state);
   if (!Number.isFinite(humidity)) return null;
+  const num = (v) => (Number.isFinite(Number(v)) ? Math.round(Number(v)) : null);
+  const state = Number(body.state);
   return {
     humidity: Math.max(0, Math.min(100, Math.round(humidity))),
     state: [0, 1, 2].includes(state) ? state : null,
+    raw: num(body.raw),
+    rssi: num(body.rssi),
     device: typeof body.device === 'string' ? body.device.slice(0, 32) : 'esp32',
-    uptime: Number.isFinite(Number(body.ts)) ? Number(body.ts) : null,
+    uptime: num(body.ts),
     ts: Date.now(),
   };
 }
 
 async function cacheGet() {
-  try {
-    const res = await caches.default.match(CACHE_URL);
-    return res ? await res.json() : null;
-  } catch { return null; }
+  try { const r = await caches.default.match(CACHE_URL); return r ? await r.json() : null; }
+  catch { return null; }
 }
-
 async function cachePut(reading) {
   try {
-    await caches.default.put(
-      CACHE_URL,
-      new Response(JSON.stringify(reading), { headers: { 'Content-Type': 'application/json' } })
-    );
+    await caches.default.put(CACHE_URL,
+      new Response(JSON.stringify(reading), { headers: { 'Content-Type': 'application/json' } }));
   } catch { /* best-effort */ }
 }
-
 async function kvGet(env) {
   if (!env.MUSGO_DATA) return null;
   try { const v = await env.MUSGO_DATA.get('latest'); return v ? JSON.parse(v) : null; }
   catch { return null; }
 }
 
+async function getConfig(env) {
+  if (cfgCache && Date.now() - cfgCacheT < 10000) return cfgCache;
+  let cfg = { ...DEFAULT_CONFIG };
+  if (env.MUSGO_DATA) {
+    try { const v = await env.MUSGO_DATA.get('config'); if (v) cfg = { ...DEFAULT_CONFIG, ...JSON.parse(v) }; }
+    catch { /* usa default */ }
+  }
+  cfgCache = cfg; cfgCacheT = Date.now();
+  return cfg;
+}
+async function setConfig(env, cfg) {
+  cfgCache = cfg; cfgCacheT = Date.now();
+  if (env.MUSGO_DATA) { try { await env.MUSGO_DATA.put('config', JSON.stringify(cfg)); } catch { /* */ } }
+}
+
 export default {
   async fetch(request, env) {
     const { pathname } = new URL(request.url);
-
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
 
     if (pathname === '/api/health') {
       return json({ ok: true, storage: env.MUSGO_DATA ? 'kv' : 'cache', time: Date.now() });
     }
 
+    if (pathname === '/api/config') {
+      if (request.method === 'GET') return json(await getConfig(env));
+      if (request.method === 'POST') {
+        let raw; try { raw = await request.json(); } catch { return json({ ok: false, error: 'JSON inválido' }, 400); }
+        const dryRaw = Math.round(Number(raw.dryRaw));
+        const wetRaw = Math.round(Number(raw.wetRaw));
+        const inRange = (n) => Number.isFinite(n) && n >= 0 && n <= 4095;
+        if (!inRange(dryRaw) || !inRange(wetRaw)) return json({ ok: false, error: 'Valores fuera de rango (0–4095)' }, 422);
+        if (Math.abs(dryRaw - wetRaw) < 50) return json({ ok: false, error: 'Seco y húmedo deben diferir (≥50)' }, 422);
+        const cfg = { dryRaw, wetRaw };
+        await setConfig(env, cfg);
+        return json({ ok: true, config: cfg });
+      }
+    }
+
     if (pathname === '/api/data' && request.method === 'POST') {
-      let raw;
-      try { raw = await request.json(); }
-      catch { return json({ ok: false, error: 'JSON inválido' }, 400); }
+      let raw; try { raw = await request.json(); } catch { return json({ ok: false, error: 'JSON inválido' }, 400); }
       const reading = normalizeReading(raw);
       if (!reading) return json({ ok: false, error: 'Falta "humidity" numérico' }, 422);
 
@@ -83,21 +115,18 @@ export default {
       let wroteKv = false;
       if (env.MUSGO_DATA && Date.now() - lastKvWrite > KV_WRITE_INTERVAL_MS) {
         lastKvWrite = Date.now();
-        try { await env.MUSGO_DATA.put('latest', JSON.stringify(reading)); wroteKv = true; }
-        catch { /* si se excede cuota, seguimos sirviendo desde cache */ }
+        try { await env.MUSGO_DATA.put('latest', JSON.stringify(reading)); wroteKv = true; } catch { /* */ }
       }
-      return json({ ok: true, kv: wroteKv, reading });
+      // Devuelve la calibracion para que el ESP32 se ajuste solo.
+      return json({ ok: true, kv: wroteKv, config: await getConfig(env) });
     }
 
     if (pathname === '/api/data' && request.method === 'GET') {
-      const [c, k] = await Promise.all([cacheGet(), kvGet(env)]);
+      const c = await cacheGet();
+      if (c && Date.now() - (c.ts || 0) < 20000) return json(c); // cache fresca: sin tocar KV
+      const k = await kvGet(env);
       const latest = [c, k].filter(Boolean).sort((a, b) => (b.ts || 0) - (a.ts || 0))[0] || {};
       return json(latest);
-    }
-
-    if (pathname === '/api/history' && request.method === 'GET') {
-      const latest = (await cacheGet()) || (await kvGet(env));
-      return json({ count: latest ? 1 : 0, items: latest ? [{ humidity: latest.humidity, state: latest.state, ts: latest.ts }] : [] });
     }
 
     if (pathname === '/' && request.method === 'GET') {
@@ -132,15 +161,14 @@ const DASHBOARD_HTML = `<!doctype html>
   header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
   .brand{display:flex;align-items:center;gap:10px}
   .logo{width:34px;height:34px;border-radius:10px;background:linear-gradient(145deg,#173a28,#0e1f17);display:flex;align-items:center;justify-content:center;font-size:18px;border:1px solid var(--line)}
-  .brand h1{font-size:16px;font-weight:650;letter-spacing:.2px}
+  .brand h1{font-size:16px;font-weight:650}
   .brand p{font-size:11.5px;color:var(--muted);margin-top:1px}
   .live{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);border:1px solid var(--line);padding:6px 10px;border-radius:999px;background:var(--panel)}
   .dot{width:8px;height:8px;border-radius:50%;background:#5a6675;transition:.3s}
   nav{display:flex;gap:4px;background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:4px;margin-bottom:16px}
   nav button{flex:1;border:0;background:transparent;color:var(--muted);font:inherit;font-size:13px;font-weight:550;padding:9px;border-radius:9px;cursor:pointer;transition:.15s}
-  nav button.on{background:var(--panel);color:var(--fg);box-shadow:0 1px 0 rgba(255,255,255,.03)}
+  nav button.on{background:var(--panel);color:var(--fg)}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:22px}
-  /* Monitor */
   .gauge{display:flex;flex-direction:column;align-items:center;padding:8px 0 6px}
   .orb{width:160px;height:160px;border-radius:50%;display:flex;align-items:center;justify-content:center;
     background:radial-gradient(circle at 50% 38%,#16321f,#0b1812);position:relative;animation:breathe 5s ease-in-out infinite}
@@ -148,14 +176,31 @@ const DASHBOARD_HTML = `<!doctype html>
   .hum{font-size:52px;font-weight:750;line-height:1}
   .hum small{font-size:20px;color:var(--muted);font-weight:600}
   .estado{margin-top:12px;font-weight:700;letter-spacing:1px;font-size:15px;color:var(--muted)}
+  .sub{margin-top:6px;font-size:11.5px;color:var(--muted)}
   .spark{display:flex;align-items:flex-end;gap:2px;height:50px;margin:18px 0 4px}
   .spark>div{flex:1;background:#26323f;border-radius:2px;min-height:2px;transition:height .4s}
   .meta{display:flex;justify-content:space-between;color:var(--muted);font-size:12px;margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
   .legend{display:flex;gap:8px;margin-top:14px}
   .chip{flex:1;text-align:center;font-size:11px;color:var(--muted);border:1px solid var(--line);border-radius:9px;padding:8px 4px}
   .chip b{display:block;font-size:12px;margin-bottom:2px}
+  /* Calibrar */
+  .readout{display:flex;gap:10px;margin-bottom:16px}
+  .ro{flex:1;text-align:center;background:var(--panel2);border:1px solid var(--line);border-radius:11px;padding:12px 8px}
+  .ro span{display:block;font-size:11px;color:var(--muted);margin-bottom:4px}
+  .ro b{font-size:24px;font-weight:700}
+  .calrow{margin:12px 0}
+  .calrow label{display:block;font-size:12.5px;color:#c9d4de;margin-bottom:6px}
+  .calrow label b{color:var(--fg)}
+  .ctl{display:flex;gap:8px}
+  .ctl input{flex:1;background:var(--panel2);border:1px solid var(--line);color:var(--fg);border-radius:9px;padding:10px;font:inherit;font-size:14px;min-width:0}
+  .ctl button,.save{border:1px solid var(--line);background:var(--panel2);color:var(--fg);font:inherit;font-size:12.5px;font-weight:600;border-radius:9px;padding:0 12px;cursor:pointer;white-space:nowrap}
+  .ctl button:active,.save:active{transform:translateY(1px)}
+  .save{width:100%;padding:12px;margin-top:8px;background:var(--accent);color:#06210f;border-color:transparent;font-size:14px}
+  .msg{font-size:12.5px;text-align:center;margin-top:10px;min-height:16px}
+  .hint{font-size:12px;line-height:1.55;color:#c9d4de;background:var(--panel2);border:1px solid var(--line);border-radius:11px;padding:12px;margin-bottom:16px}
+  .hint b{color:var(--fg)}
   /* Info */
-  .info h2{font-size:14px;margin:18px 0 8px;display:flex;align-items:center;gap:8px}
+  .info h2{font-size:14px;margin:18px 0 8px}
   .info h2:first-child{margin-top:2px}
   .info p{font-size:13.5px;line-height:1.6;color:#c9d4de}
   .flow{list-style:none;counter-reset:s;margin:6px 0}
@@ -186,6 +231,7 @@ const DASHBOARD_HTML = `<!doctype html>
 
   <nav>
     <button id="tabMon" class="on" onclick="ver('mon')">Monitor</button>
+    <button id="tabCal" onclick="ver('cal')">Calibrar</button>
     <button id="tabInfo" onclick="ver('info')">Cómo funciona</button>
   </nav>
 
@@ -194,6 +240,7 @@ const DASHBOARD_HTML = `<!doctype html>
     <div class="gauge">
       <div id="orb" class="orb"><div class="hum"><span id="val">--</span><small>%</small></div></div>
       <div id="estado" class="estado">esperando datos…</div>
+      <div id="subline" class="sub">&nbsp;</div>
     </div>
     <div class="spark" id="spark"></div>
     <div class="meta"><span>Última lectura</span><span id="ago">—</span></div>
@@ -204,40 +251,61 @@ const DASHBOARD_HTML = `<!doctype html>
     </div>
   </section>
 
+  <!-- ===== Calibrar ===== -->
+  <section id="cal" class="card hidden">
+    <div class="hint">
+      <b>Calibra el sensor con tu musgo (2 puntos):</b><br>
+      1) Con el musgo <b>seco</b>, pulsa <b>“Capturar”</b> en SECO.<br>
+      2) Riega bien el musgo, espera que absorba, y pulsa <b>“Capturar”</b> en HÚMEDO.<br>
+      3) Pulsa <b>Guardar</b>. El ESP32 se recalibra solo en segundos.
+    </div>
+    <div class="readout">
+      <div class="ro"><span>Lectura cruda (ADC)</span><b id="rawNow">—</b></div>
+      <div class="ro"><span>Humedad actual</span><b id="humNow">—</b></div>
+    </div>
+    <div class="calrow">
+      <label>Punto <b>SECO</b> &nbsp;·&nbsp; ADC con musgo seco</label>
+      <div class="ctl">
+        <input id="inSeco" type="number" min="0" max="4095" inputmode="numeric" />
+        <button onclick="capturar('inSeco')">Capturar</button>
+      </div>
+    </div>
+    <div class="calrow">
+      <label>Punto <b>HÚMEDO</b> &nbsp;·&nbsp; ADC con musgo mojado</label>
+      <div class="ctl">
+        <input id="inHumedo" type="number" min="0" max="4095" inputmode="numeric" />
+        <button onclick="capturar('inHumedo')">Capturar</button>
+      </div>
+    </div>
+    <button class="save" onclick="guardar()">Guardar calibración</button>
+    <div id="msg" class="msg"></div>
+  </section>
+
   <!-- ===== Cómo funciona ===== -->
   <section id="info" class="card info hidden">
     <h2>🌱 ¿Qué es?</h2>
-    <p><b>Musgo que respira</b> es una instalación que le da “voz” a una planta de musgo. Un sensor mide cuánta agua tiene el musgo y, según eso, la obra <b>cambia de color, emite sonidos</b> y muestra su estado <b>en vivo por internet</b> en este panel. Así cualquiera puede saber, de un vistazo, cómo se siente el musgo.</p>
+    <p><b>Musgo que respira</b> le da “voz” a una planta de musgo. Un sensor mide cuánta agua tiene el musgo y, según eso, la obra <b>cambia de color, emite sonidos</b> y muestra su estado <b>en vivo por internet</b> en este panel.</p>
 
     <h2>⚙️ ¿Cómo funciona?</h2>
     <ol class="flow">
-      <li>Un <b>sensor de humedad</b> mide el agua en el musgo cada fracción de segundo.</li>
-      <li>Una placa <b>ESP32</b> convierte esa medida en un porcentaje (0–100 %) y decide el estado.</li>
-      <li>El ESP32 lo envía por <b>WiFi</b> a un servidor en la nube (<b>Cloudflare Worker</b>) cada 2 segundos.</li>
-      <li>El servidor guarda la última lectura y la comparte de forma global.</li>
-      <li>Este <b>panel</b> la pide y se actualiza solo, sin recargar la página.</li>
+      <li>Un <b>sensor de humedad</b> mide el agua en el musgo varias veces por segundo.</li>
+      <li>Una placa <b>ESP32</b> lo convierte en un porcentaje (0–100 %) usando la <b>calibración</b> y decide el estado.</li>
+      <li>El ESP32 lo envía por <b>WiFi</b> a un servidor en la nube (<b>Cloudflare</b>) cada 2 segundos.</li>
+      <li>El servidor guarda la lectura y devuelve la calibración (así el sensor se ajusta desde la web).</li>
+      <li>Este <b>panel</b> la muestra y se actualiza solo, sin recargar.</li>
     </ol>
 
     <h2>🎨🔊 Estados, color y sonido</h2>
     <table>
       <tr><th>Estado</th><th>LED</th><th>Sonido</th></tr>
-      <tr>
-        <td><span class="tag" style="background:var(--humedo)"></span><b>Húmedo</b><br>&gt; 60 %</td>
-        <td>Verde</td>
-        <td>Casi en silencio. Cada cierto tiempo un <b>“check”</b> suave que confirma que está bien.</td>
-      </tr>
-      <tr>
-        <td><span class="tag" style="background:var(--medio)"></span><b>Medio</b><br>30–60 %</td>
-        <td>Ámbar</td>
-        <td><b>Alerta media</b>: doble tono de atención repetido cada ~12 s.</td>
-      </tr>
-      <tr>
-        <td><span class="tag" style="background:var(--seco)"></span><b>Seco</b><br>&lt; 30 %</td>
-        <td>Rojo</td>
-        <td><b>Súper alerta</b>: ráfaga aguda y ascendente, insistente cada ~4 s. ¡Necesita agua!</td>
-      </tr>
+      <tr><td><span class="tag" style="background:var(--humedo)"></span><b>Húmedo</b><br>&gt; 60 %</td><td>Verde</td><td>Casi en silencio. Un <b>“check”</b> suave que confirma que está bien.</td></tr>
+      <tr><td><span class="tag" style="background:var(--medio)"></span><b>Medio</b><br>30–60 %</td><td>Ámbar</td><td><b>Alerta media</b>: doble tono cada ~12 s.</td></tr>
+      <tr><td><span class="tag" style="background:var(--seco)"></span><b>Seco</b><br>&lt; 30 %</td><td>Rojo</td><td><b>Súper alerta</b>: ráfaga aguda insistente cada ~4 s. ¡Necesita agua!</td></tr>
     </table>
-    <p style="margin-top:10px">Cada vez que <b>cambia de estado</b>, suena primero un “ding-dong” identificador para avisar el cambio, y luego la alerta del nuevo estado.</p>
+    <p style="margin-top:10px">Al <b>cambiar de estado</b> suena un “ding-dong” identificador y luego la alerta del nuevo estado.</p>
+
+    <h2>🔧 Calibración</h2>
+    <p>Cada sensor y cada musgo son distintos. En la pestaña <b>Calibrar</b> fijas el valor con el musgo seco y con el musgo mojado; el sistema traduce todo a 0–100 % automáticamente.</p>
 
     <h2>🧩 Tecnología</h2>
     <div class="tech">
@@ -255,29 +323,55 @@ const DASHBOARD_HTML = `<!doctype html>
 <script>
 var ESTADOS=[{txt:'SECO',color:'#f0594b'},{txt:'MEDIO',color:'#e3a23c'},{txt:'HÚMEDO',color:'#3fb950'}];
 function $(id){return document.getElementById(id)}
-var lastTs=0, hist=[];
+var lastTs=0, hist=[], currentRaw=null;
 function colorFor(h){return h<30?ESTADOS[0]:h<60?ESTADOS[1]:ESTADOS[2]}
 function relTime(ms){var s=Math.round((Date.now()-ms)/1000);if(s<2)return'ahora';if(s<60)return'hace '+s+'s';return'hace '+Math.round(s/60)+' min'}
 function setOnline(ok){$('status').textContent=ok?'en línea':'sin conexión';$('dot').style.background=ok?'#3fb950':'#f0594b'}
 function ver(t){
-  var mon=t==='mon';
-  $('mon').classList.toggle('hidden',!mon);$('info').classList.toggle('hidden',mon);
-  $('tabMon').classList.toggle('on',mon);$('tabInfo').classList.toggle('on',!mon);
+  ['mon','cal','info'].forEach(function(s){$(s).classList.toggle('hidden',s!==t)});
+  $('tabMon').classList.toggle('on',t==='mon');$('tabCal').classList.toggle('on',t==='cal');$('tabInfo').classList.toggle('on',t==='info');
+  if(t==='cal')loadConfig();
 }
 function drawSpark(){var s=$('spark');s.innerHTML='';hist.slice(-44).forEach(function(h){var b=document.createElement('div');b.style.height=Math.max(2,h)+'%';b.style.background=colorFor(h).color;s.appendChild(b)})}
 function tick(){
   fetch('/api/data',{cache:'no-store'}).then(function(r){if(!r.ok)throw 0;return r.json()}).then(function(j){
     setOnline(true);
     if(j&&typeof j.humidity==='number'){
+      var stale=j.ts&&(Date.now()-j.ts>10000);
       var h=j.humidity, st=ESTADOS[j.state]||colorFor(h);
-      $('val').textContent=h;$('estado').textContent=st.txt;$('estado').style.color=st.color;
+      currentRaw=(typeof j.raw==='number')?j.raw:null;
+      $('val').textContent=h;
+      $('estado').textContent=stale?'SENSOR DESCONECTADO':st.txt;
+      $('estado').style.color=stale?'#8b98a5':st.color;
       $('orb').style.background='radial-gradient(circle at 50% 38%,'+st.color+'2e,#0b1812)';
-      $('orb').style.boxShadow='0 0 34px 6px '+st.color+'55';
+      $('orb').style.boxShadow=stale?'none':'0 0 34px 6px '+st.color+'55';
+      var bits=[];
+      if(currentRaw!=null)bits.push('ADC '+currentRaw);
+      if(typeof j.rssi==='number')bits.push('señal '+j.rssi+' dBm');
+      if(j.device)bits.push(j.device);
+      $('subline').textContent=bits.join('  ·  ')||'\\u00a0';
+      $('rawNow').textContent=currentRaw!=null?currentRaw:'—';
+      $('humNow').textContent=h+' %';
       if(j.ts!==lastTs){lastTs=j.ts||Date.now();hist.push(h);if(hist.length>140)hist.shift();drawSpark()}
     }else{$('estado').textContent='sin lecturas todavía'}
   }).catch(function(){setOnline(false)});
 }
 function refreshAgo(){if(lastTs)$('ago').textContent=relTime(lastTs)}
+function loadConfig(){
+  fetch('/api/config',{cache:'no-store'}).then(function(r){return r.json()}).then(function(c){
+    if($('inSeco').value==='')$('inSeco').value=c.dryRaw;
+    if($('inHumedo').value==='')$('inHumedo').value=c.wetRaw;
+  }).catch(function(){});
+}
+function capturar(id){ if(currentRaw==null){msg('Aún no hay lectura del sensor',true);return} $(id).value=currentRaw; msg('Capturado: '+currentRaw,false); }
+function msg(t,err){var m=$('msg');m.textContent=t;m.style.color=err?'#f0594b':'#3fb950'}
+function guardar(){
+  var d=parseInt($('inSeco').value,10), w=parseInt($('inHumedo').value,10);
+  if(isNaN(d)||isNaN(w)){msg('Escribe ambos valores',true);return}
+  fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dryRaw:d,wetRaw:w})})
+    .then(function(r){return r.json()}).then(function(j){ msg(j.ok?'Calibración guardada ✓ (el sensor se ajusta solo)':((j.error||'Error')),!j.ok); })
+    .catch(function(){msg('Error de red',true)});
+}
 tick();setInterval(tick,1500);setInterval(refreshAgo,1000);
 </script>
 </body>
