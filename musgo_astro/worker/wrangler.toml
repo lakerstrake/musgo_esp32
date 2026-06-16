@@ -5,10 +5,6 @@ compatibility_date = "2024-11-01"
 
 account_id = "dac9003257ad1248eac7396e1715b05c"
 
-[[durable_objects.bindings]]
-name = "MUSGO"
-class_name = "MusgoState"
-
-[[migrations]]
-tag = "v1"
-new_sqlite_classes = ["MusgoState"]
+[[kv_namespaces]]
+binding = "MUSGO_DATA"
+id = "9a597ef934e140beaf116089c19d3544"

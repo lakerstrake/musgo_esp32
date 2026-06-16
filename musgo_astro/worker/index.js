@@ -1,15 +1,12 @@
 // Cloudflare Worker — API + dashboard del "Musgo que respira"
 //
-// Almacenamiento: Durable Object (una sola instancia global "global").
-//   -> Estado consistente desde cualquier datacenter (a diferencia de Cache API).
-//   -> Sin el limite de 1000 escrituras/dia de KV: ideal para telemetria cada 2s.
-//
-// Rutas:
-//   GET  /            -> dashboard visual (HTML)
-//   POST /api/data    -> guarda la ultima lectura del ESP32
-//   GET  /api/data    -> ultima lectura
-//   GET  /api/history -> ultimas N lecturas
-//   GET  /api/health  -> estado
+// Almacenamiento en dos capas:
+//   - KV "MUSGO_DATA" (global, consistente entre datacenters): clave "latest".
+//     Escritura throttled cada 15s para respetar la cuota gratis de KV (1000/dia).
+//   - Cache API (por-datacenter, sin limite): da lecturas casi en vivo a quien
+//     este en el mismo colo que el ESP32.
+//   La lectura devuelve la mas reciente entre ambas capas.
+//   El historico (sparkline) lo acumula el navegador desde sus propias lecturas.
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -18,7 +15,11 @@ const CORS = {
   'Access-Control-Max-Age': '86400',
 };
 
-const MAX_HISTORY = 120;
+const KV_WRITE_INTERVAL_MS = 15000; // throttle de escritura a KV
+const CACHE_URL = 'https://musgo.internal/latest';
+
+// Estado por-isolate: throttle de KV.
+let lastKvWrite = 0;
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -41,65 +42,37 @@ function normalizeReading(body) {
   };
 }
 
-// --- Durable Object: guarda el estado global del musgo ---
-export class MusgoState {
-  constructor(ctx) {
-    this.ctx = ctx;
-    this.latest = null;
-    this.history = [];
-    this.loaded = false;
-    this.lastPersist = 0;
-  }
-
-  async load() {
-    if (this.loaded) return;
-    this.latest = (await this.ctx.storage.get('latest')) || null;
-    this.history = (await this.ctx.storage.get('history')) || [];
-    this.loaded = true;
-  }
-
-  async fetch(request) {
-    await this.load();
-    const { pathname } = new URL(request.url);
-
-    if (pathname === '/put') {
-      const reading = await request.json();
-      this.latest = reading;
-      this.history.push({ humidity: reading.humidity, state: reading.state, ts: reading.ts });
-      while (this.history.length > MAX_HISTORY) this.history.shift();
-
-      // Persistir (best-effort, throttled). La memoria es la fuente de verdad para lecturas en vivo.
-      const now = Date.now();
-      if (now - this.lastPersist > 5000) {
-        this.lastPersist = now;
-        try {
-          await this.ctx.storage.put('latest', this.latest);
-          await this.ctx.storage.put('history', this.history);
-        } catch (e) { /* si se excede algun limite, seguimos sirviendo desde memoria */ }
-      }
-      return json({ ok: true, reading });
-    }
-
-    if (pathname === '/latest') return json(this.latest || {});
-    if (pathname === '/history') return json({ count: this.history.length, items: this.history });
-    return json({ ok: false, error: 'not found' }, 404);
-  }
+async function cacheGet() {
+  try {
+    const res = await caches.default.match(CACHE_URL);
+    return res ? await res.json() : null;
+  } catch { return null; }
 }
 
-// --- Worker principal: enruta /api/* al Durable Object y sirve el dashboard ---
+async function cachePut(reading) {
+  try {
+    await caches.default.put(
+      CACHE_URL,
+      new Response(JSON.stringify(reading), { headers: { 'Content-Type': 'application/json' } })
+    );
+  } catch { /* best-effort */ }
+}
+
+async function kvGet(env) {
+  if (!env.MUSGO_DATA) return null;
+  try { const v = await env.MUSGO_DATA.get('latest'); return v ? JSON.parse(v) : null; }
+  catch { return null; }
+}
+
 export default {
   async fetch(request, env) {
-    const url = new URL(request.url);
-    const { pathname } = url;
+    const { pathname } = new URL(request.url);
 
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
 
     if (pathname === '/api/health') {
-      return json({ ok: true, storage: 'durable-object', time: Date.now() });
+      return json({ ok: true, storage: env.MUSGO_DATA ? 'kv' : 'cache', time: Date.now() });
     }
-
-    // Una sola instancia global del Durable Object
-    const stub = env.MUSGO.get(env.MUSGO.idFromName('global'));
 
     if (pathname === '/api/data' && request.method === 'POST') {
       let raw;
@@ -107,15 +80,29 @@ export default {
       catch { return json({ ok: false, error: 'JSON inválido' }, 400); }
       const reading = normalizeReading(raw);
       if (!reading) return json({ ok: false, error: 'Falta "humidity" numérico' }, 422);
-      return stub.fetch('https://do/put', { method: 'POST', body: JSON.stringify(reading) });
+
+      // Capa viva (cada POST) + capa global (throttled).
+      await cachePut(reading);
+      let wroteKv = false;
+      if (env.MUSGO_DATA && Date.now() - lastKvWrite > KV_WRITE_INTERVAL_MS) {
+        lastKvWrite = Date.now();
+        try { await env.MUSGO_DATA.put('latest', JSON.stringify(reading)); wroteKv = true; }
+        catch { /* si se excede cuota, seguimos sirviendo desde cache */ }
+      }
+      return json({ ok: true, kv: wroteKv, reading });
     }
 
     if (pathname === '/api/data' && request.method === 'GET') {
-      return stub.fetch('https://do/latest');
+      const [c, k] = await Promise.all([cacheGet(), kvGet(env)]);
+      // Devuelve la lectura mas reciente entre cache (colo) y KV (global).
+      const latest = [c, k].filter(Boolean).sort((a, b) => (b.ts || 0) - (a.ts || 0))[0] || {};
+      return json(latest);
     }
 
+    // Historico minimo (el navegador construye su propia serie). Mantiene compatibilidad.
     if (pathname === '/api/history' && request.method === 'GET') {
-      return stub.fetch('https://do/history');
+      const latest = (await cacheGet()) || (await kvGet(env));
+      return json({ count: latest ? 1 : 0, items: latest ? [{ humidity: latest.humidity, state: latest.state, ts: latest.ts }] : [] });
     }
 
     if (pathname === '/' && request.method === 'GET') {
@@ -129,6 +116,7 @@ export default {
 };
 
 // Dashboard servido en "/". Consume la API del mismo origen (sin CORS).
+// El sparkline se acumula en el navegador a partir de cada lectura.
 const DASHBOARD_HTML = `<!doctype html>
 <html lang="es">
 <head>
@@ -174,10 +162,11 @@ const DASHBOARD_HTML = `<!doctype html>
 <script>
 const ESTADOS=[{txt:'SECO',color:'#ff5a5f'},{txt:'MEDIO',color:'#ffb84d'},{txt:'HÚMEDO',color:'#4de37f'}];
 const $=(id)=>document.getElementById(id);
-let lastTs=0;
+let lastTs=0;const hist=[];
 const colorFor=(h)=>h<30?ESTADOS[0]:h<60?ESTADOS[1]:ESTADOS[2];
 function relTime(ms){const s=Math.round((Date.now()-ms)/1000);if(s<2)return'ahora';if(s<60)return'hace '+s+'s';return'hace '+Math.round(s/60)+' min'}
 function setOnline(ok){$('status').textContent=ok?'en línea':'sin conexión';$('pill').style.background=ok?'#4de37f':'#ff5a5f'}
+function drawSpark(){const spark=$('spark');spark.innerHTML='';hist.slice(-40).forEach((h)=>{const b=document.createElement('div');b.style.height=Math.max(2,h)+'%';b.style.background=colorFor(h).color;spark.appendChild(b)})}
 async function tick(){try{
   const r=await fetch('/api/data',{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);
   const j=await r.json();setOnline(true);
@@ -186,16 +175,12 @@ async function tick(){try{
     $('hum').textContent=h;$('estado').textContent=st.txt;$('estado').style.color=st.color;
     $('orb').style.background='radial-gradient(circle at 50% 40%,'+st.color+'33,#0c1c16)';
     $('orb').style.boxShadow='0 0 30px 6px '+st.color+'55';
-    lastTs=j.ts||Date.now();$('foot').textContent=(j.device||'esp32');
+    if(j.ts!==lastTs){lastTs=j.ts||Date.now();hist.push(h);if(hist.length>120)hist.shift();drawSpark()}
+    $('foot').textContent=(j.device||'esp32');
   }else{$('estado').textContent='sin lecturas todavía'}
 }catch(e){setOnline(false);$('foot').textContent=String(e.message||e)}}
-async function loadHistory(){try{
-  const r=await fetch('/api/history',{cache:'no-store'});if(!r.ok)return;
-  const d=await r.json(),items=d.items||[],spark=$('spark');spark.innerHTML='';
-  items.slice(-40).forEach((it)=>{const b=document.createElement('div');b.style.height=Math.max(2,it.humidity)+'%';b.style.background=colorFor(it.humidity).color;spark.appendChild(b)});
-}catch(e){}}
 function refreshAgo(){if(lastTs)$('ago').textContent=relTime(lastTs)}
-tick();loadHistory();setInterval(tick,1500);setInterval(loadHistory,5000);setInterval(refreshAgo,1000);
+tick();setInterval(tick,1500);setInterval(refreshAgo,1000);
 </script>
 </body>
 </html>`;

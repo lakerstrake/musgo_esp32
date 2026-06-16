@@ -6,11 +6,7 @@ compatibility_date = "2024-11-01"
 
 account_id = "dac9003257ad1248eac7396e1715b05c"
 
-# Durable Object: estado global consistente para la telemetria en vivo.
-[[durable_objects.bindings]]
-name = "MUSGO"
-class_name = "MusgoState"
-
-[[migrations]]
-tag = "v1"
-new_sqlite_classes = ["MusgoState"]
+# KV global (consistente entre datacenters). Namespace "musgo" ya existente.
+[[kv_namespaces]]
+binding = "MUSGO_DATA"
+id = "9a597ef934e140beaf116089c19d3544"
