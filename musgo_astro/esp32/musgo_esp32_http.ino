@@ -2,11 +2,17 @@
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <Wire.h>
-#include <Adafruit_BMP280.h>
-// Sensor ambiental BMP280 (temperatura + presion) por I2C.
-// Para BME280 (ademas humedad del aire): instala "Adafruit BME280", cambia el
-// include a <Adafruit_BME280.h>, el objeto a "Adafruit_BME280 bmp;" y añade en
-// el payload:  payload += "\"airHum\":" + String(bmp.readHumidity(), 0) + ",";
+// Sensor ambiental por I2C.  BMP280 = temperatura + presion.
+// BME280 = ademas humedad del AIRE. Pon USAR_BME280 en true si tu modulo es BME280
+// (instala la libreria "Adafruit BME280").
+#define USAR_BME280 false
+#if USAR_BME280
+  #include <Adafruit_BME280.h>
+  Adafruit_BME280 bmp;
+#else
+  #include <Adafruit_BMP280.h>
+  Adafruit_BMP280 bmp;
+#endif
 
 // ===================== Ajustes de red =====================
 const char* ssid = "UNAL"; // red abierta
@@ -50,10 +56,9 @@ unsigned long tSerial = 0;
 int  estadoAnterior = -1;
 unsigned long tProxAlerta = 0;
 
-// --- BMP280 (temperatura + presion ambiente) ---
-Adafruit_BMP280 bmp;
+// --- Sensor ambiental BMP280 / BME280 ---
 bool  bmpOK = false;
-float tempC = 0, presionHpa = 0;
+float tempC = 0, presionHpa = 0, airHumPct = 0;
 unsigned long tBmp = 0;
 
 // ===================== Sistema de sonido =====================
@@ -155,6 +160,9 @@ void enviarDato(float h, int estado, int crudo) {
   if (bmpOK) {
     payload += "\"temp\":" + String(tempC, 1) + ",";
     payload += "\"pressure\":" + String(presionHpa, 1) + ",";
+#if USAR_BME280
+    payload += "\"airHum\":" + String(airHumPct, 0) + ",";
+#endif
   }
   payload += "\"device\":\"" + String(deviceId) + "\",";
   payload += "\"ts\":" + String(millis());
@@ -197,12 +205,14 @@ void setup() {
   Wire.begin(PIN_SDA, PIN_SCL);
   bmpOK = bmp.begin(0x76) || bmp.begin(0x77);     // prueba ambas direcciones
   if (bmpOK) {
+#if !USAR_BME280
     bmp.setSampling(Adafruit_BMP280::MODE_NORMAL, Adafruit_BMP280::SAMPLING_X2,
                     Adafruit_BMP280::SAMPLING_X16, Adafruit_BMP280::FILTER_X16,
                     Adafruit_BMP280::STANDBY_MS_500);
-    Serial.println("BMP280 detectado (temperatura + presion)");
+#endif
+    Serial.println("Sensor ambiental detectado (temp + presion)");
   } else {
-    Serial.println("BMP280 NO detectado -> se omiten temp/presion (revisa cableado/direccion)");
+    Serial.println("Sensor ambiental NO detectado -> se omiten temp/presion (revisa cableado/direccion)");
   }
 
   ledcAttach(PIN_R, 5000, 8);
@@ -261,7 +271,7 @@ void loop() {
     }
 
     static unsigned long lastSend = 0;
-    if (ahora - lastSend >= 2000) { lastSend = ahora; enviarDato(humedad, estadoActual, crudo); }
+    if (ahora - lastSend >= 1500) { lastSend = ahora; enviarDato(humedad, estadoActual, crudo); } // muestreo mas rapido
   }
 
   // Lectura ambiental BMP280 (cambia lento: cada 1 s basta)
@@ -269,6 +279,9 @@ void loop() {
     tBmp = ahora;
     tempC = bmp.readTemperature();
     presionHpa = bmp.readPressure() / 100.0f;
+#if USAR_BME280
+    airHumPct = bmp.readHumidity();
+#endif
   }
 
   int estado = (humedad < UMBRAL_SECO) ? 0 : (humedad < UMBRAL_HUMEDO ? 1 : 2);

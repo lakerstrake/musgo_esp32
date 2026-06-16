@@ -21,8 +21,8 @@ const CORS = {
 };
 
 const KV_WRITE_INTERVAL_MS = 15000;   // throttle de escritura a KV (cuota gratis)
-const HISTORY_MIN_GAP_MS = 12000;     // separacion minima entre puntos del historial
-const MAX_HISTORY = 360;              // ~1.5 h de historial (360 x 15s)
+const HISTORY_MIN_GAP_MS = 3000;      // separacion minima entre puntos del historial (mas denso = mas vivo)
+const MAX_HISTORY = 240;              // puntos guardados en la nube
 const CACHE_URL = 'https://musgo.internal/latest';
 const DEFAULT_CONFIG = { dryRaw: 2515, wetRaw: 1128 }; // calibracion por defecto (musgo)
 
@@ -245,11 +245,13 @@ const DASHBOARD_HTML = `<!doctype html>
   .subnav button{flex:1;border:0;background:transparent;color:var(--muted);font:inherit;font-size:12px;font-weight:550;padding:7px;border-radius:8px;cursor:pointer}
   .subnav button.on{background:var(--panel);color:var(--fg)}
   code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:1px 5px;color:#c9d4de;white-space:nowrap}
-  .chartcard{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
-  .charthead{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;font-size:13px;color:#c9d4de}
-  .charthead b{font-size:18px;color:var(--fg);font-weight:700}
-  .chart{width:100%;height:56px;display:block;overflow:visible}
-  .chartrange{display:flex;justify-content:space-between;font-size:10.5px;color:var(--muted);margin-top:5px}
+  #hist.card{padding:14px 16px}
+  .chartcard{background:var(--panel2);border:1px solid var(--line);border-radius:11px;padding:9px 12px;margin-bottom:8px}
+  .charthead{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px;font-size:12px;color:#c9d4de}
+  .charthead b{font-size:16px;color:var(--fg);font-weight:700}
+  .chart{width:100%;height:34px;display:block;overflow:visible}
+  .chartrange{display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:2px}
+  .chartnote{font-size:10.5px;color:var(--muted);text-align:center;margin-top:6px}
   .schem{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10px;line-height:1.4;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px;color:#c9d4de;overflow-x:auto;white-space:pre;margin:4px 0}
   footer{margin-top:18px;text-align:center;color:var(--muted);font-size:12px;line-height:1.7}
   footer b{color:var(--fg);font-weight:600}
@@ -297,7 +299,7 @@ const DASHBOARD_HTML = `<!doctype html>
   <!-- ===== Historial ===== -->
   <section id="hist" class="card hidden">
     <div class="chartcard">
-      <div class="charthead"><span>💧 Humedad</span><b id="hHum">—</b></div>
+      <div class="charthead"><span>💧 Humedad del musgo</span><b id="hHum">—</b></div>
       <svg class="chart" id="cHum" viewBox="0 0 300 56" preserveAspectRatio="none"></svg>
       <div class="chartrange"><span id="rHumA">—</span><span id="rHumB">—</span></div>
     </div>
@@ -311,7 +313,8 @@ const DASHBOARD_HTML = `<!doctype html>
       <svg class="chart" id="cPres" viewBox="0 0 300 56" preserveAspectRatio="none"></svg>
       <div class="chartrange"><span id="rPresA">—</span><span id="rPresB">—</span></div>
     </div>
-    <div class="meta"><span>Muestras guardadas en la nube</span><span id="histCount">—</span></div>
+    <div class="chartnote">💧 musgo (sensor de suelo) · 🌡️ ⏱️ ambiente (BMP280) · en vivo</div>
+    <div class="meta"><span>Muestras en la nube</span><span id="histCount">—</span></div>
   </section>
 
   <!-- ===== Calibrar ===== -->
@@ -461,7 +464,7 @@ function ver(t){
   $('tabMon').classList.toggle('on',t==='mon');$('tabHist').classList.toggle('on',t==='hist');
   $('tabCal').classList.toggle('on',t==='cal');$('tabInfo').classList.toggle('on',t==='info');
   if(t==='cal')loadConfig();
-  if(t==='hist')loadHistory();
+  if(t==='hist')seedLive();
   if(t==='info')nivel('bas');
 }
 function drawChart(svgId,vals,color){
@@ -475,19 +478,36 @@ function drawChart(svgId,vals,color){
   el.innerHTML='<path d="'+area+'" fill="'+color+'22"/><path d="'+d+'" fill="none" stroke="'+color+'" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>';
   return {min:min,max:max,last:pts[pts.length-1]};
 }
-function loadHistory(){
+// Buffer en vivo en el navegador: las graficas se actualizan en cada lectura.
+var live={hum:[],temp:[],pres:[]}, LIVE_MAX=120;
+function isNum(v){return typeof v==='number'}
+function pushLive(j){
+  if(isNum(j.humidity)){live.hum.push(j.humidity);if(live.hum.length>LIVE_MAX)live.hum.shift()}
+  if(isNum(j.temp)){live.temp.push(j.temp);if(live.temp.length>LIVE_MAX)live.temp.shift()}
+  if(isNum(j.pressure)){live.pres.push(j.pressure);if(live.pres.length>LIVE_MAX)live.pres.shift()}
+}
+function drawCharts(){
+  $('histCount').textContent=Math.max(live.hum.length,live.temp.length,live.pres.length);
+  var rh=drawChart('cHum',live.hum,'#3fb950');
+  var rt=drawChart('cTemp',live.temp,'#e3a23c');
+  var rp=drawChart('cPres',live.pres,'#5aa9e6');
+  if(rh){$('hHum').textContent=rh.last+' %';$('rHumA').textContent='mín '+rh.min+'%';$('rHumB').textContent='máx '+rh.max+'%'}
+  else{$('hHum').textContent='—';$('rHumA').textContent='—';$('rHumB').textContent=''}
+  if(rt){$('hTemp').textContent=rt.last.toFixed(1)+' °C';$('rTempA').textContent='mín '+rt.min.toFixed(1)+'°';$('rTempB').textContent='máx '+rt.max.toFixed(1)+'°'}
+  else{$('hTemp').textContent='sin BMP280';$('rTempA').textContent='conecta el sensor';$('rTempB').textContent=''}
+  if(rp){$('hPres').textContent=Math.round(rp.last)+' hPa';$('rPresA').textContent='mín '+Math.round(rp.min);$('rPresB').textContent='máx '+Math.round(rp.max)}
+  else{$('hPres').textContent='sin BMP280';$('rPresA').textContent='conecta el sensor';$('rPresB').textContent=''}
+}
+function seedLive(){
   fetch('/api/history',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){
-    var it=d.items||[]; $('histCount').textContent=it.length;
-    var rh=drawChart('cHum',it.map(function(x){return x.humidity}),'#3fb950');
-    var rt=drawChart('cTemp',it.map(function(x){return x.temp}),'#e3a23c');
-    var rp=drawChart('cPres',it.map(function(x){return x.pressure}),'#5aa9e6');
-    if(rh){$('hHum').textContent=rh.last+' %';$('rHumA').textContent='mín '+rh.min+'%';$('rHumB').textContent='máx '+rh.max+'%';}
-    else{$('hHum').textContent='—'}
-    if(rt){$('hTemp').textContent=rt.last.toFixed(1)+' °C';$('rTempA').textContent='mín '+rt.min.toFixed(1)+'°';$('rTempB').textContent='máx '+rt.max.toFixed(1)+'°';}
-    else{$('hTemp').textContent='sin datos';$('rTempA').textContent='conecta el BMP280';$('rTempB').textContent=''}
-    if(rp){$('hPres').textContent=Math.round(rp.last)+' hPa';$('rPresA').textContent='mín '+Math.round(rp.min);$('rPresB').textContent='máx '+Math.round(rp.max);}
-    else{$('hPres').textContent='sin datos';$('rPresA').textContent='conecta el BMP280';$('rPresB').textContent=''}
-  }).catch(function(){});
+    var it=d.items||[];
+    if(it.length>live.hum.length){
+      live.hum=it.map(function(x){return x.humidity}).filter(isNum).slice(-LIVE_MAX);
+      live.temp=it.map(function(x){return x.temp}).filter(isNum).slice(-LIVE_MAX);
+      live.pres=it.map(function(x){return x.pressure}).filter(isNum).slice(-LIVE_MAX);
+    }
+    drawCharts();
+  }).catch(function(){drawCharts()});
 }
 function nivel(t){
   $('infoBasica').classList.toggle('hidden',t!=='bas');
@@ -520,7 +540,7 @@ function tick(){
       if(typeof j.temp==='number')$('temp').textContent=j.temp.toFixed(1)+' °C';
       if(typeof j.pressure==='number')$('pres').textContent=Math.round(j.pressure)+' hPa';
       if(typeof j.airHum==='number'){$('airBox').classList.remove('hidden');$('air').textContent=j.airHum+' %'}
-      if(j.ts!==lastTs){lastTs=j.ts||Date.now();hist.push(h);if(hist.length>140)hist.shift();drawSpark()}
+      if(j.ts!==lastTs){lastTs=j.ts||Date.now();hist.push(h);if(hist.length>140)hist.shift();drawSpark();pushLive(j);if(!$('hist').classList.contains('hidden'))drawCharts()}
     }else{$('estado').textContent='sin lecturas todavía'}
   }).catch(function(){setOnline(false)});
 }
@@ -540,8 +560,7 @@ function guardar(){
     .then(function(r){return r.json()}).then(function(j){ msg(j.ok?'Calibración guardada ✓ (el sensor se ajusta solo)':((j.error||'Error')),!j.ok); })
     .catch(function(){msg('Error de red',true)});
 }
-tick();setInterval(tick,1500);setInterval(refreshAgo,1000);
-setInterval(function(){ if(!$('hist').classList.contains('hidden'))loadHistory(); },10000);
+seedLive();tick();setInterval(tick,1000);setInterval(refreshAgo,1000);
 </script>
 </body>
 </html>`;
