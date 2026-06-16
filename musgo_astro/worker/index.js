@@ -214,6 +214,10 @@ const DASHBOARD_HTML = `<!doctype html>
   .tag{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:middle}
   .tech{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
   .tech span{font-size:11.5px;color:#c9d4de;background:var(--panel2);border:1px solid var(--line);border-radius:7px;padding:5px 9px}
+  .subnav{display:flex;gap:4px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:3px;margin-bottom:16px}
+  .subnav button{flex:1;border:0;background:transparent;color:var(--muted);font:inherit;font-size:12px;font-weight:550;padding:7px;border-radius:8px;cursor:pointer}
+  .subnav button.on{background:var(--panel);color:var(--fg)}
+  code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:1px 5px;color:#c9d4de;white-space:nowrap}
   footer{margin-top:18px;text-align:center;color:var(--muted);font-size:12px;line-height:1.7}
   footer b{color:var(--fg);font-weight:600}
   .hidden{display:none}
@@ -283,6 +287,12 @@ const DASHBOARD_HTML = `<!doctype html>
 
   <!-- ===== Cómo funciona ===== -->
   <section id="info" class="card info hidden">
+    <div class="subnav">
+      <button id="subBas" class="on" onclick="nivel('bas')">Explicación básica</button>
+      <button id="subTec" onclick="nivel('tec')">Explicación técnica</button>
+    </div>
+
+    <div id="infoBasica">
     <h2>🌱 ¿Qué es?</h2>
     <p><b>Musgo que respira</b> le da “voz” a una planta de musgo. Un sensor mide cuánta agua tiene el musgo y, según eso, la obra <b>cambia de color, emite sonidos</b> y muestra su estado <b>en vivo por internet</b> en este panel.</p>
 
@@ -312,6 +322,44 @@ const DASHBOARD_HTML = `<!doctype html>
       <span>ESP32</span><span>Sensor de humedad</span><span>LED RGB</span><span>Buzzer</span>
       <span>Cloudflare Workers</span><span>KV (nube)</span><span>HTTPS</span><span>HTML/JS</span>
     </div>
+    </div><!-- /infoBasica -->
+
+    <div id="infoTecnica" class="hidden">
+      <h2>🏗️ ¿Dónde vive todo?</h2>
+      <p>Todo se aloja en <b>un único Cloudflare Worker</b>: cómputo <b>serverless</b> que corre en el <b>borde (edge)</b> de la red de Cloudflare, repartido por datacenters de todo el mundo. Ese mismo Worker, con <b>una sola URL</b>, sirve esta página (ruta <code>/</code>) y la API (rutas <code>/api/*</code>). <b>No hay un servidor encendido ni una base de datos que mantener</b>: el código solo se ejecuta cuando llega una petición.</p>
+
+      <h2>🔁 Flujo de datos (técnico)</h2>
+      <ol class="flow">
+        <li><b>Firmware ESP32</b> (Arduino / C++): promedia 16 muestras del ADC, aplica filtro <b>EMA</b>, calcula la humedad con la calibración y hace <b>HTTPS POST</b> a <code>/api/data</code> cada 2 s con un JSON <code>{humidity, state, raw, rssi, ts}</code>. El TLS lo maneja <code>WiFiClientSecure</code>.</li>
+        <li>El Worker <b>valida y normaliza</b> la lectura, le pone marca de tiempo del servidor y la guarda en dos capas (ver abajo).</li>
+        <li>En la <b>respuesta del POST</b>, el Worker devuelve la calibración <code>{dryRaw, wetRaw}</code>; el ESP32 la aplica y <b>se recalibra en caliente</b> sin reprogramarse.</li>
+        <li>Esta página pide <code>GET /api/data</code> cada 1.5 s por <b>fetch (AJAX)</b> y se redibuja sin recargar.</li>
+      </ol>
+
+      <h2>🗄️ Almacenamiento</h2>
+      <table>
+        <tr><th>Capa</th><th>Para qué sirve</th></tr>
+        <tr><td><b>Workers KV</b><br><code>latest</code> · <code>config</code></td><td>Almacén <b>global y consistente</b> entre datacenters. Escritura limitada (cada 15 s) para respetar la cuota gratuita.</td></tr>
+        <tr><td><b>Cache API</b><br>por datacenter</td><td>Lecturas de <b>baja latencia</b> sin gastar cuota. La página lee de aquí si el dato es fresco (&lt; 20 s) y, si no, recurre a KV.</td></tr>
+      </table>
+
+      <h2>🔌 Endpoints (la API)</h2>
+      <table>
+        <tr><th>Ruta</th><th>Función</th></tr>
+        <tr><td><code>GET /</code></td><td>Este dashboard (HTML)</td></tr>
+        <tr><td><code>GET /api/data</code></td><td>Última lectura</td></tr>
+        <tr><td><code>POST /api/data</code></td><td>Recibe la lectura → responde la calibración</td></tr>
+        <tr><td><code>GET·POST /api/config</code></td><td>Leer / fijar la calibración</td></tr>
+        <tr><td><code>GET /api/health</code></td><td>Estado del servicio</td></tr>
+      </table>
+
+      <h2>🚀 Hosting y despliegue</h2>
+      <ol class="flow">
+        <li>El código vive en <b>GitHub</b> (<code>lakerstrake/musgo_esp32</code>).</li>
+        <li>Un solo comando <code>npx wrangler deploy</code> sube el Worker al <b>edge global</b> de Cloudflare.</li>
+        <li><b>HTTPS automático</b> en <code>*.workers.dev</code>; escala solo, sin contenedores ni máquinas virtuales.</li>
+      </ol>
+    </div>
   </section>
 
   <footer>
@@ -331,6 +379,13 @@ function ver(t){
   ['mon','cal','info'].forEach(function(s){$(s).classList.toggle('hidden',s!==t)});
   $('tabMon').classList.toggle('on',t==='mon');$('tabCal').classList.toggle('on',t==='cal');$('tabInfo').classList.toggle('on',t==='info');
   if(t==='cal')loadConfig();
+  if(t==='info')nivel('bas');
+}
+function nivel(t){
+  $('infoBasica').classList.toggle('hidden',t!=='bas');
+  $('infoTecnica').classList.toggle('hidden',t!=='tec');
+  $('subBas').classList.toggle('on',t==='bas');
+  $('subTec').classList.toggle('on',t==='tec');
 }
 function drawSpark(){var s=$('spark');s.innerHTML='';hist.slice(-44).forEach(function(h){var b=document.createElement('div');b.style.height=Math.max(2,h)+'%';b.style.background=colorFor(h).color;s.appendChild(b)})}
 function tick(){
