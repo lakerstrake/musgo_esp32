@@ -1,15 +1,16 @@
 # wrangler.toml en la RAIZ del repo.
 # Lo usa el build de Cloudflare cuando ejecuta `npx wrangler deploy` desde la raiz.
-# Apunta al worker que vive dentro de musgo_astro/.
 name = "musgoesp32"
 main = "musgo_astro/worker/index.js"
 compatibility_date = "2024-11-01"
 
 account_id = "dac9003257ad1248eac7396e1715b05c"
 
-# Almacenamiento durable opcional (KV). El worker funciona sin esto.
-# Para activarlo: npx wrangler kv namespace create MUSGO_DATA
-# y descomenta pegando el id:
-# [[kv_namespaces]]
-# binding = "MUSGO_DATA"
-# id = "PEGA_AQUI_EL_ID_DEL_KV"
+# Durable Object: estado global consistente para la telemetria en vivo.
+[[durable_objects.bindings]]
+name = "MUSGO"
+class_name = "MusgoState"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["MusgoState"]

@@ -1,14 +1,15 @@
-// Cloudflare Worker — API del "Musgo que respira"
+// Cloudflare Worker — API + dashboard del "Musgo que respira"
 //
-// Endpoints:
-//   POST /api/data     -> guarda la última lectura del ESP32 (JSON)
-//   GET  /api/data     -> devuelve la última lectura
-//   GET  /api/history  -> devuelve las últimas N lecturas (máx 120)
-//   GET  /api/health   -> estado del servicio
+// Almacenamiento: Durable Object (una sola instancia global "global").
+//   -> Estado consistente desde cualquier datacenter (a diferencia de Cache API).
+//   -> Sin el limite de 1000 escrituras/dia de KV: ideal para telemetria cada 2s.
 //
-// Almacenamiento:
-//   - Si existe el binding KV `MUSGO_DATA`, usa KV (durable).
-//   - Si no, usa Cache API + memoria del isolate (funciona sin configurar nada).
+// Rutas:
+//   GET  /            -> dashboard visual (HTML)
+//   POST /api/data    -> guarda la ultima lectura del ESP32
+//   GET  /api/data    -> ultima lectura
+//   GET  /api/history -> ultimas N lecturas
+//   GET  /api/health  -> estado
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -18,12 +19,6 @@ const CORS = {
 };
 
 const MAX_HISTORY = 120;
-const LATEST_KEY = 'latest';
-const HISTORY_KEY = 'history';
-const CACHE_BASE = 'https://musgo.internal/';
-
-// Respaldo en memoria del isolate (cuando no hay KV).
-const mem = { latest: null, history: [] };
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -31,34 +26,6 @@ function json(data, status = 200) {
     headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...CORS },
   });
 }
-
-// --- Capa de almacenamiento (KV si existe, si no Cache API + memoria) ---
-
-async function storeGet(env, key) {
-  if (env && env.MUSGO_DATA) {
-    const v = await env.MUSGO_DATA.get(key);
-    return v ? JSON.parse(v) : null;
-  }
-  const cache = caches.default;
-  const res = await cache.match(CACHE_BASE + key);
-  if (res) return res.json();
-  return key === HISTORY_KEY ? mem.history : mem.latest;
-}
-
-async function storePut(env, key, value) {
-  if (env && env.MUSGO_DATA) {
-    await env.MUSGO_DATA.put(key, JSON.stringify(value));
-    return;
-  }
-  if (key === HISTORY_KEY) mem.history = value; else mem.latest = value;
-  const cache = caches.default;
-  await cache.put(
-    CACHE_BASE + key,
-    new Response(JSON.stringify(value), { headers: { 'Content-Type': 'application/json' } })
-  );
-}
-
-// --- Validación de la lectura entrante ---
 
 function normalizeReading(body) {
   if (typeof body !== 'object' || body === null) return null;
@@ -69,55 +36,88 @@ function normalizeReading(body) {
     humidity: Math.max(0, Math.min(100, Math.round(humidity))),
     state: [0, 1, 2].includes(state) ? state : null,
     device: typeof body.device === 'string' ? body.device.slice(0, 32) : 'esp32',
-    uptime: Number.isFinite(Number(body.ts)) ? Number(body.ts) : null, // millis() del ESP32
-    ts: Date.now(), // timestamp real del servidor (epoch ms)
+    uptime: Number.isFinite(Number(body.ts)) ? Number(body.ts) : null,
+    ts: Date.now(),
   };
 }
 
+// --- Durable Object: guarda el estado global del musgo ---
+export class MusgoState {
+  constructor(ctx) {
+    this.ctx = ctx;
+    this.latest = null;
+    this.history = [];
+    this.loaded = false;
+    this.lastPersist = 0;
+  }
+
+  async load() {
+    if (this.loaded) return;
+    this.latest = (await this.ctx.storage.get('latest')) || null;
+    this.history = (await this.ctx.storage.get('history')) || [];
+    this.loaded = true;
+  }
+
+  async fetch(request) {
+    await this.load();
+    const { pathname } = new URL(request.url);
+
+    if (pathname === '/put') {
+      const reading = await request.json();
+      this.latest = reading;
+      this.history.push({ humidity: reading.humidity, state: reading.state, ts: reading.ts });
+      while (this.history.length > MAX_HISTORY) this.history.shift();
+
+      // Persistir (best-effort, throttled). La memoria es la fuente de verdad para lecturas en vivo.
+      const now = Date.now();
+      if (now - this.lastPersist > 5000) {
+        this.lastPersist = now;
+        try {
+          await this.ctx.storage.put('latest', this.latest);
+          await this.ctx.storage.put('history', this.history);
+        } catch (e) { /* si se excede algun limite, seguimos sirviendo desde memoria */ }
+      }
+      return json({ ok: true, reading });
+    }
+
+    if (pathname === '/latest') return json(this.latest || {});
+    if (pathname === '/history') return json({ count: this.history.length, items: this.history });
+    return json({ ok: false, error: 'not found' }, 404);
+  }
+}
+
+// --- Worker principal: enruta /api/* al Durable Object y sirve el dashboard ---
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const { pathname } = url;
 
-    if (request.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: CORS });
-    }
+    if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
 
     if (pathname === '/api/health') {
-      return json({ ok: true, storage: env && env.MUSGO_DATA ? 'kv' : 'cache', time: Date.now() });
+      return json({ ok: true, storage: 'durable-object', time: Date.now() });
     }
 
-    if (pathname === '/api/data' && request.method === 'GET') {
-      const latest = await storeGet(env, LATEST_KEY);
-      return json(latest || {});
-    }
+    // Una sola instancia global del Durable Object
+    const stub = env.MUSGO.get(env.MUSGO.idFromName('global'));
 
     if (pathname === '/api/data' && request.method === 'POST') {
       let raw;
-      try {
-        raw = await request.json();
-      } catch {
-        return json({ ok: false, error: 'JSON inválido' }, 400);
-      }
+      try { raw = await request.json(); }
+      catch { return json({ ok: false, error: 'JSON inválido' }, 400); }
       const reading = normalizeReading(raw);
       if (!reading) return json({ ok: false, error: 'Falta "humidity" numérico' }, 422);
+      return stub.fetch('https://do/put', { method: 'POST', body: JSON.stringify(reading) });
+    }
 
-      await storePut(env, LATEST_KEY, reading);
-
-      const history = (await storeGet(env, HISTORY_KEY)) || [];
-      history.push({ humidity: reading.humidity, state: reading.state, ts: reading.ts });
-      while (history.length > MAX_HISTORY) history.shift();
-      await storePut(env, HISTORY_KEY, history);
-
-      return json({ ok: true, reading });
+    if (pathname === '/api/data' && request.method === 'GET') {
+      return stub.fetch('https://do/latest');
     }
 
     if (pathname === '/api/history' && request.method === 'GET') {
-      const history = (await storeGet(env, HISTORY_KEY)) || [];
-      return json({ count: history.length, items: history });
+      return stub.fetch('https://do/history');
     }
 
-    // Raíz: sirve el dashboard visual
     if (pathname === '/' && request.method === 'GET') {
       return new Response(DASHBOARD_HTML, {
         headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', ...CORS },

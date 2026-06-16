@@ -5,7 +5,7 @@
 // Ajustes de red
 const char* ssid = "UNAL"; // red abierta
 // Reemplaza por la URL real de tu Worker (la imprime `wrangler deploy`):
-const char* serverUrl = "https://musgoesp32.TU-SUBDOMINIO.workers.dev/api/data";
+const char* serverUrl = "https://musgoesp32.jmlagos2003.workers.dev/api/data";
 const char* deviceId  = "musgo-01"; // identificador de este dispositivo
 
 // Pines y calibración (mismo código original)
@@ -162,7 +162,7 @@ void loop() {
     WiFi.begin(ssid);
   }
 
-  if (ahora - tSensor >= 250) {
+  if (ahora - tSensor >= 50) {
     tSensor = ahora;
     int crudo = leerSensor();
     humedad = calcularHumedad(crudo);
@@ -182,7 +182,7 @@ void loop() {
 
     // Enviar dato a servidor cada 2s (o cuando cambie)
     static unsigned long lastSend = 0;
-    if (ahora - lastSend >= 2000) {
+    if (ahora - lastSend >= 500) {
       lastSend = ahora;
       enviarDato(humedad, estadoActual);
     }

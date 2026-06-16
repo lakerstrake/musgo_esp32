@@ -1,7 +1,7 @@
 ---
 // La URL de la API se define en la variable de entorno PUBLIC_API_URL al hacer build.
 // Ej: PUBLIC_API_URL=https://musgoesp32.<tu-subdominio>.workers.dev
-const API_BASE = (import.meta.env.PUBLIC_API_URL || 'https://musgoesp32.workers.dev').replace(/\/$/, '');
+const API_BASE = (import.meta.env.PUBLIC_API_URL || 'https://musgoesp32.jmlagos2003.workers.dev').replace(/\/$/, '');
 ---
 
 <!doctype html>
@@ -136,8 +136,8 @@ const API_BASE = (import.meta.env.PUBLIC_API_URL || 'https://musgoesp32.workers.
       function refreshAgo() { if (lastTs) $('ago').textContent = relTime(lastTs); }
 
       tick(); loadHistory();
-      setInterval(tick, 1500);
-      setInterval(loadHistory, 5000);
+      setInterval(tick, 500);
+      setInterval(loadHistory, 2000);
       setInterval(refreshAgo, 1000);
     </script>
   </body>
