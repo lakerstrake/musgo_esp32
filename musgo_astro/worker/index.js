@@ -20,13 +20,13 @@ const CORS = {
   'Access-Control-Max-Age': '86400',
 };
 
-const KV_WRITE_INTERVAL_MS = 15000;   // throttle de escritura a KV (cuota gratis)
-const HISTORY_MIN_GAP_MS = 3000;      // separacion minima entre puntos del historial (mas denso = mas vivo)
-const MAX_HISTORY = 240;              // puntos guardados en la nube
-const CACHE_URL = 'https://musgo.internal/latest';
+const HISTORY_MIN_GAP_MS = 3000;      // separacion minima entre puntos del historial
+const MAX_HISTORY = 240;              // puntos guardados
+const CACHE_BASE = 'https://musgo.internal/';
 const DEFAULT_CONFIG = { dryRaw: 2515, wetRaw: 1128 }; // calibracion por defecto (musgo)
 
-let lastKvWrite = 0;
+// Telemetria (latest + history) -> Cache API (sin limite de operaciones, gratis).
+// Solo la calibracion usa KV (se escribe poquisimas veces) -> casi cero ops KV.
 let memHistory = null;                // serie temporal en memoria del isolate
 let cfgCache = null, cfgCacheT = 0;
 
@@ -58,30 +58,19 @@ function normalizeReading(body) {
   };
 }
 
-async function cacheGet() {
-  try { const r = await caches.default.match(CACHE_URL); return r ? await r.json() : null; }
+async function cacheGetKey(key) {
+  try { const r = await caches.default.match(CACHE_BASE + key); return r ? await r.json() : null; }
   catch { return null; }
 }
-async function cachePut(reading) {
+async function cachePutKey(key, val) {
   try {
-    await caches.default.put(CACHE_URL,
-      new Response(JSON.stringify(reading), { headers: { 'Content-Type': 'application/json' } }));
+    await caches.default.put(CACHE_BASE + key,
+      new Response(JSON.stringify(val), { headers: { 'Content-Type': 'application/json' } }));
   } catch { /* best-effort */ }
-}
-// KV "state" = { latest, history[] }. Una sola escritura cubre lectura + serie.
-async function kvGetState(env) {
-  if (!env.MUSGO_DATA) return null;
-  try { const v = await env.MUSGO_DATA.get('state'); return v ? JSON.parse(v) : null; }
-  catch { return null; }
-}
-async function kvPutState(env, state) {
-  if (!env.MUSGO_DATA) return false;
-  try { await env.MUSGO_DATA.put('state', JSON.stringify(state)); return true; }
-  catch { return false; }
 }
 
 async function getConfig(env) {
-  if (cfgCache && Date.now() - cfgCacheT < 10000) return cfgCache;
+  if (cfgCache && Date.now() - cfgCacheT < 60000) return cfgCache;
   let cfg = { ...DEFAULT_CONFIG };
   if (env.MUSGO_DATA) {
     try { const v = await env.MUSGO_DATA.get('config'); if (v) cfg = { ...DEFAULT_CONFIG, ...JSON.parse(v) }; }
@@ -101,7 +90,7 @@ export default {
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
 
     if (pathname === '/api/health') {
-      return json({ ok: true, storage: env.MUSGO_DATA ? 'kv' : 'cache', time: Date.now() });
+      return json({ ok: true, storage: 'cache', config: env.MUSGO_DATA ? 'kv' : 'mem', time: Date.now() });
     }
 
     if (pathname === '/api/config') {
@@ -124,35 +113,25 @@ export default {
       const reading = normalizeReading(raw);
       if (!reading) return json({ ok: false, error: 'Falta "humidity" numérico' }, 422);
 
-      await cachePut(reading); // capa viva por-datacenter
+      await cachePutKey('latest', reading); // telemetria en Cache API (sin KV)
 
-      // Historial: append en memoria, con separacion minima entre puntos.
-      if (memHistory === null) { const s = await kvGetState(env); memHistory = (s && s.history) || []; }
+      // Historial en memoria + Cache (separacion minima entre puntos).
+      if (memHistory === null) { memHistory = (await cacheGetKey('history')) || []; }
       const last = memHistory[memHistory.length - 1];
       if (!last || reading.ts - (last.ts || 0) >= HISTORY_MIN_GAP_MS) {
         memHistory.push({ ts: reading.ts, humidity: reading.humidity, temp: reading.temp, pressure: reading.pressure, airHum: reading.airHum });
         while (memHistory.length > MAX_HISTORY) memHistory.shift();
+        await cachePutKey('history', memHistory);
       }
-
-      // Persistencia throttled: una sola escritura cubre latest + history.
-      let wroteKv = false;
-      if (env.MUSGO_DATA && Date.now() - lastKvWrite > KV_WRITE_INTERVAL_MS) {
-        lastKvWrite = Date.now();
-        wroteKv = await kvPutState(env, { latest: reading, history: memHistory });
-      }
-      return json({ ok: true, kv: wroteKv, config: await getConfig(env) });
+      return json({ ok: true, config: await getConfig(env) });
     }
 
     if (pathname === '/api/data' && request.method === 'GET') {
-      const c = await cacheGet();
-      if (c && Date.now() - (c.ts || 0) < 20000) return json(c); // cache fresca: sin tocar KV
-      const s = await kvGetState(env);
-      return json((s && s.latest) || c || {});
+      return json((await cacheGetKey('latest')) || {});
     }
 
     if (pathname === '/api/history' && request.method === 'GET') {
-      let items = memHistory;
-      if (items === null) { const s = await kvGetState(env); items = (s && s.history) || []; }
+      const items = (memHistory !== null) ? memHistory : ((await cacheGetKey('history')) || []);
       return json({ count: items.length, items });
     }
 
@@ -318,7 +297,7 @@ const DASHBOARD_HTML = `<!doctype html>
       <svg class="chart" id="cAir" viewBox="0 0 300 56" preserveAspectRatio="none"></svg>
       <div class="chartrange"><span id="rAirA">—</span><span id="rAirB">—</span></div>
     </div>
-    <div class="chartnote">💧 musgo (suelo) · 🌡️ ⏱️ ambiente (BMP280) · 💨 aire (solo BME280)</div>
+    <div class="chartnote">💧 musgo (suelo) · 🌡️ ⏱️ ambiente · 💨 aire (Si7021/BME280)</div>
     <div class="meta"><span>Muestras en la nube</span><span id="histCount">—</span></div>
   </section>
 
@@ -361,7 +340,7 @@ const DASHBOARD_HTML = `<!doctype html>
 
     <div id="infoBasica">
     <h2>🌱 ¿Qué es?</h2>
-    <p><b>Musgo que respira</b> le da “voz” a una planta de musgo. Un sensor mide cuánta agua tiene el musgo y, según eso, la obra <b>cambia de color, emite sonidos</b> y muestra su estado <b>en vivo por internet</b> en este panel. Un segundo sensor (<b>BMP280</b>) mide la <b>temperatura</b> y la <b>presión</b> del ambiente alrededor del musgo.</p>
+    <p><b>Musgo que respira</b> le da “voz” a una planta de musgo. Un sensor mide cuánta agua tiene el musgo y, según eso, la obra <b>cambia de color, emite sonidos</b> y muestra su estado <b>en vivo por internet</b> en este panel. Sensores ambientales (<b>BMP280</b> + <b>Si7021</b>) miden la <b>temperatura</b>, la <b>presión</b> y la <b>humedad del aire</b>. Cada caja de Petri con musgo tiene su indicador <b>LED</b>.</p>
 
     <h2>⚙️ ¿Cómo funciona?</h2>
     <ol class="flow">
@@ -386,8 +365,8 @@ const DASHBOARD_HTML = `<!doctype html>
 
     <h2>🧩 Tecnología</h2>
     <div class="tech">
-      <span>ESP32</span><span>Sensor de humedad</span><span>BMP280 (I²C)</span><span>LED RGB</span><span>Buzzer</span>
-      <span>Cloudflare Workers</span><span>KV (nube)</span><span>HTTPS</span><span>HTML/JS</span>
+      <span>ESP32</span><span>Sensor de humedad</span><span>BMP280</span><span>Si7021</span><span>LED RGB ×2</span><span>LED bicolor</span><span>Buzzer</span>
+      <span>Cloudflare Workers</span><span>Cache API</span><span>KV (config)</span><span>HTTPS</span>
     </div>
     </div><!-- /infoBasica -->
 
@@ -397,7 +376,7 @@ const DASHBOARD_HTML = `<!doctype html>
 
       <h2>🔁 Flujo de datos (técnico)</h2>
       <ol class="flow">
-        <li><b>Firmware ESP32</b> (Arduino / C++): promedia 16 muestras del ADC del sensor de humedad, aplica filtro <b>EMA</b>, lee el <b>BMP280</b> por <b>I²C</b> (temperatura y presión) y hace <b>HTTPS POST</b> a <code>/api/data</code> cada 2 s con un JSON <code>{humidity, state, raw, rssi, temp, pressure, ts}</code>. El TLS lo maneja <code>WiFiClientSecure</code>.</li>
+        <li><b>Firmware ESP32</b> (Arduino / C++): promedia 16 muestras del ADC del sensor de humedad, aplica filtro <b>EMA</b>, lee los sensores <b>I²C</b> (BMP280: presión; Si7021: temperatura y humedad del aire) y hace <b>HTTPS POST</b> a <code>/api/data</code> cada 2 s con un JSON <code>{humidity, state, raw, temp, pressure, airHum, ts}</code>. El TLS lo maneja <code>WiFiClientSecure</code>.</li>
         <li>El Worker <b>valida y normaliza</b> la lectura, le pone marca de tiempo del servidor y la guarda en dos capas (ver abajo).</li>
         <li>En la <b>respuesta del POST</b>, el Worker devuelve la calibración <code>{dryRaw, wetRaw}</code>; el ESP32 la aplica y <b>se recalibra en caliente</b> sin reprogramarse.</li>
         <li>Esta página pide <code>GET /api/data</code> cada 1.5 s por <b>fetch (AJAX)</b> y se redibuja sin recargar.</li>
@@ -430,24 +409,25 @@ const DASHBOARD_HTML = `<!doctype html>
       <h2>🔌 Esquemático de conexiones</h2>
 <pre class="schem">                 ESP32 DevKit
               ┌───────────────┐
-  Humedad ────┤ GPIO34   3V3 ├──── VCC sensores
-  (AOUT)      │              │
-  LED R ──[R]─┤ GPIO25   GND ├──── GND común
-  LED G ──[R]─┤ GPIO26       │
-  LED B ──[R]─┤ GPIO27       │
-  Buzzer + ───┤ GPIO22       │
-  BMP280 SDA ─┤ GPIO21       │
-  BMP280 SCL ─┤ GPIO19       │
-              └───────────────┘
-  [R] = resistencia 220–330 Ω</pre>
+  Musgo AOUT ─┤ D34           │
+  RGB1 R/G/B ─┤ D25/D26/D14   │  musgo
+  RGB1 común ─┤ D27 (+)       │
+  RGB2 R/G/B ─┤ D2/D4/D16     │  aire
+  Bicolor R/Y─┤ D5/D18        │  alerta
+  Buzzer + ───┤ D22           │
+  I2C SDA/SCL─┤ D19/D21       │  BMP280/BME280
+              │               │  + Si7021
+              └───────────────┘</pre>
       <table>
         <tr><th>Componente</th><th>Conexión a la ESP32</th></tr>
-        <tr><td><b>Sensor humedad</b></td><td>VCC→3V3 · GND→GND · AOUT→<code>GPIO34</code></td></tr>
-        <tr><td><b>LED RGB</b></td><td>R→<code>25</code> · G→<code>26</code> · B→<code>27</code> · común→3V3*</td></tr>
-        <tr><td><b>Buzzer</b></td><td>+→<code>GPIO22</code> · −→GND</td></tr>
-        <tr><td><b>BMP280</b> (I²C)</td><td>VCC→3V3 · GND→GND · SDA→<code>21</code> · SCL→<code>19</code></td></tr>
+        <tr><td><b>Sensor musgo</b></td><td>AOUT→<code>D34</code> · VCC/GND</td></tr>
+        <tr><td><b>RGB 1</b> (musgo)</td><td>R/G/B→<code>D25/D26/D14</code> · común(+)→<code>D27</code></td></tr>
+        <tr><td><b>RGB 2</b> (aire)</td><td>R/G/B→<code>D2/D4/D16</code> · común→GND</td></tr>
+        <tr><td><b>Bicolor</b> (alerta)</td><td>rojo→<code>D5</code> · amarillo→<code>D18</code> · común→GND</td></tr>
+        <tr><td><b>Buzzer</b></td><td>+→<code>D22</code> · −→GND</td></tr>
+        <tr><td><b>BMP280 + Si7021</b></td><td>SDA→<code>D19</code> · SCL→<code>D21</code> (I²C)</td></tr>
       </table>
-      <p style="margin-top:8px">*LED de <b>ánodo común</b> (por defecto): común→3V3. Si es de <b>cátodo común</b>: común→GND y pon <code>CATODO_COMUN=true</code> en el sketch. Usa resistencias de 220–330 Ω en R/G/B.</p>
+      <p style="margin-top:8px">Esquemático completo y notas en <code>CONEXIONES.md</code>. RGB 1 es ánodo común; RGB 2 y bicolor, cátodo común.</p>
     </div>
   </section>
 

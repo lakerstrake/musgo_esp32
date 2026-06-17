@@ -1,89 +1,103 @@
 # Conexiones — Musgo que respira 🌿
 
-Esquemático de cableado de la ESP32 con todos los periféricos.
+Esquemático de cableado de la ESP32 con todos los módulos.
+Concepto: **cada caja de Petri con musgo** tiene su indicador LED; el sensor del musgo
+mide la humedad del sustrato y los sensores ambientales (I²C) miden el aire alrededor.
 
 ## Esquemático general
 
 ```
-                          ESP32 DevKit (38 pines)
-                       ┌─────────────────────────┐
-                       │                         │
-   Sensor humedad      │                         │
-   ┌──────────┐        │                         │
-   │ VCC ─────┼────────┤ 3V3                     │
-   │ GND ─────┼────────┤ GND                     │
-   │ AOUT ────┼────────┤ GPIO34 (ADC, entrada)   │
-   └──────────┘        │                         │
-                       │                         │
-   LED RGB             │                         │
-   ┌──────────┐        │                         │
-   │ R ──[330Ω]┼───────┤ GPIO25 (PWM)            │
-   │ G ──[330Ω]┼───────┤ GPIO26 (PWM)            │
-   │ B ──[330Ω]┼───────┤ GPIO27 (PWM)            │
-   │ común ────┼───────┤ 3V3  (ánodo común)      │
-   └──────────┘        │                         │
-                       │                         │
-   Buzzer              │                         │
-   ┌──────────┐        │                         │
-   │ + ───────┼────────┤ GPIO22                  │
-   │ − ───────┼────────┤ GND                     │
-   └──────────┘        │                         │
-                       │                         │
-   BMP280 (I²C)        │                         │
-   ┌──────────┐        │                         │
-   │ VCC ─────┼────────┤ 3V3                     │
-   │ GND ─────┼────────┤ GND                     │
-   │ SDA ─────┼────────┤ GPIO21 (I²C SDA)        │
-   │ SCL ─────┼────────┤ GPIO19 (I²C SCL)        │
-   │ SDO ─────┼────────┤ GND  → dirección 0x76   │
-   │ CSB ─────┼────────┤ 3V3  → modo I²C         │
-   └──────────┘        └─────────────────────────┘
+                            ESP32 DevKit
+                       ┌──────────────────────┐
+  Sensor musgo 1321v   │                      │
+   VCC ────────────────┤ 3V3                  │
+   GND ────────────────┤ GND                  │
+   AOUT ───────────────┤ D34  (ADC entrada)   │
+                       │                      │
+  RGB 1 (anodo comun)  │                      │
+   R ──────────────────┤ D25                  │
+   G ──────────────────┤ D26                  │
+   B ──────────────────┤ D14                  │
+   comun (+) ──────────┤ D27  (alimentacion)  │   *ver nota
+                       │                      │
+  RGB 2 (catodo comun) │                      │
+   R ──────────────────┤ D2                   │
+   G ──────────────────┤ D4                   │
+   B ──────────────────┤ D16                  │
+   comun (−) ──────────┤ GND                  │
+                       │                      │
+  Bicolor rojo/amar.   │                      │
+   rojo ───────────────┤ D5                   │
+   amarillo ───────────┤ D18                  │
+   comun (−) ──────────┤ GND                  │
+                       │                      │
+  Buzzer               │                      │
+   + ──────────────────┤ D22                  │
+   − ──────────────────┤ GND                  │
+                       │                      │
+  I2C (bus compartido) │                      │
+   SDA ────────────────┤ D19                  │   BMP280/BME280 (0x76/0x77)
+   SCL ────────────────┤ D21                  │   + Si7021 (0x40)
+   VCC ────────────────┤ 3V3                  │
+   GND ────────────────┤ GND                  │
+                       └──────────────────────┘
 ```
 
 ## Tabla de pines
 
-| Componente | Pin del componente | Pin ESP32 | Notas |
+| Módulo | Pin | ESP32 | Notas |
 |---|---|---|---|
-| Sensor de humedad | VCC | 3V3 | Capacitivo/resistivo de suelo |
-| | GND | GND | |
-| | AOUT (analógico) | **GPIO34** | Solo entrada (ADC1) |
-| LED RGB | R | **GPIO25** | Resistencia 220–330 Ω |
-| | G | **GPIO26** | Resistencia 220–330 Ω |
-| | B | **GPIO27** | Resistencia 220–330 Ω |
-| | común | 3V3 | Ánodo común (ver nota) |
-| Buzzer | + | **GPIO22** | Pasivo (tonos) o activo |
-| | − | GND | |
-| BMP280 | VCC | 3V3 | No 5V salvo módulo con regulador |
-| | GND | GND | |
-| | SDA | **GPIO21** | I²C datos |
-| | SCL | **GPIO19** | I²C reloj (evita el 22 del buzzer) |
-| | SDO | GND | Dirección 0x76 (a 3V3 → 0x77) |
-| | CSB | 3V3 | Selecciona modo I²C |
+| Sensor musgo (1321v) | AOUT | **D34** | Entrada analógica (ADC) |
+| | VCC / GND | 3V3 / GND | |
+| **RGB 1** (ánodo común) | R / G / B | **D25 / D26 / D14** | Color por humedad del **musgo** |
+| | común (+) | **D27** | Alimentación del módulo* |
+| **RGB 2** (cátodo común) | R / G / B | **D2 / D4 / D16** | Color por humedad del **aire** |
+| | común (−) | GND | |
+| **Bicolor** rojo/amarillo | rojo / amarillo | **D5 / D18** | Semáforo de alerta |
+| | común (−) | GND | |
+| Buzzer | + / − | **D22** / GND | |
+| **BMP280 / BME280** | SDA / SCL | **D19 / D21** | Presión (+temp) |
+| **Si7021** | SDA / SCL | **D19 / D21** | Temperatura + humedad del aire |
+| | VCC / GND | 3V3 / GND | I²C es un bus: ambos comparten SDA/SCL |
 
-## Notas importantes
+## Qué hace cada LED
 
-- **LED RGB — tipo de LED:**
-  - *Ánodo común* (por defecto en el sketch): el pin común va a **3V3**. Deja `CATODO_COMUN = false`.
-  - *Cátodo común*: el pin común va a **GND** y pon `CATODO_COMUN = true` en el sketch.
-  - Usa **resistencias de 220–330 Ω** en cada color (R, G, B) para limitar corriente.
+| LED | Indica |
+|---|---|
+| **RGB 1** | Humedad del **musgo** (rojo seco → verde húmedo) |
+| **RGB 2** | Humedad del **aire** (Si7021/BME280). Si no hay sensor de aire, espeja el musgo |
+| **Bicolor** | **Alerta**: 🔴 seco · 🟡 medio · apagado húmedo |
 
-- **Buzzer — pasivo vs activo:**
-  - *Pasivo* (recomendado, permite tonos): deja `#define USAR_TONO true`.
-  - *Activo* (solo enciende/apaga): pon `#define USAR_TONO false`.
+## Notas importantes / posibles correcciones
 
-- **BMP280:**
-  - Usa I²C en **GPIO21 (SDA)** y **GPIO19 (SCL)** a propósito, para no chocar con el buzzer (GPIO22).
-  - Requiere librerías **Adafruit BMP280** + **Adafruit Unified Sensor**.
-  - Si no lo detecta, prueba dirección 0x77 (SDO a 3V3) o sube un *I²C scanner*.
-  - Para medir **humedad del aire** usa un **BME280** (mismo cableado; ver comentario en el sketch).
+- **⚠️ Temperatura corrupta (corregido):** el firmware ahora usa **SDA=D19, SCL=D21**
+  para coincidir con tu cableado. Si SDA/SCL están cruzados, las lecturas salen
+  basura (ej. 140 °C). Verifica que SDA vaya a **D19** y SCL a **D21**.
 
-- **Alimentación:** todos los sensores a **3V3** y **GND común**. La ESP32 se alimenta por USB.
+- **RGB 1 alimentado por D27 (*):** un pin GPIO entrega como máximo ~40 mA. Si el LED
+  parpadea o la ESP32 se reinicia, **conecta el común del RGB 1 a 3V3** en vez de D27
+  (y déjalo así; el código no necesita D27 para funcionar). Es lo más fiable.
 
-## Pines en uso (resumen rápido)
+- **Resistencias:** si un módulo RGB no las trae integradas, pon **220–330 Ω** en cada
+  color (R/G/B) para no quemar el LED.
+
+- **Tipo de común (si los colores salen invertidos):** RGB 1 es **ánodo común** y RGB 2
+  **cátodo común** en el código. Si un módulo se ve “al revés”, cambia su `*_ANODO`
+  en el sketch.
+
+- **Pines sensibles (strapping):** D2 y D5 son pines de arranque del ESP32. Como aquí
+  son salidas a LED suelen funcionar, pero si la placa no arranca, mueve ese color a
+  otro pin libre (ej. D13, D15, D32, D33) y actualiza el sketch.
+
+- **Si7021:** dirección I²C 0x40. **BMP280/BME280:** 0x76 o 0x77. No chocan (bus compartido).
+  Instala las librerías: *Adafruit BMP280*, *Adafruit BME280*, *Adafruit Si7021*,
+  *Adafruit Unified Sensor*.
+
+## Resumen rápido de pines
 
 ```
-GPIO34 → Humedad (AOUT)      GPIO22 → Buzzer (+)
-GPIO25 → LED R               GPIO21 → BMP280 SDA
-GPIO26 → LED G               GPIO19 → BMP280 SCL
-GPIO27 → LED B               3V3/GND → alimentación de todos
+D34 → Musgo (AOUT)       D2/D4/D16 → RGB2 (R/G/B)
+D25/D26/D14 → RGB1 (R/G/B)  D5/D18 → Bicolor (rojo/amarillo)
+D27 → RGB1 común (+)      D22 → Buzzer
+D19/D21 → I2C (SDA/SCL): BMP280/BME280 + Si7021
 ```

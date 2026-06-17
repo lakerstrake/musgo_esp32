@@ -14,25 +14,19 @@ ESP32 ──HTTPS POST /api/data──▶ Cloudflare Worker (API + dashboard) �
 
 ## Hardware y conexiones
 
-**Sensor de humedad** → `GPIO34` (analógico). **LED RGB** → `25/26/27`. **Buzzer** → `GPIO22`.
-
-**BMP280** (temperatura + presión, por I²C):
-
-| BMP280 | ESP32 |
+| Módulo | ESP32 |
 |---|---|
-| VCC | 3V3 |
-| GND | GND |
-| SDA | GPIO21 |
-| SCL | GPIO19 |
-| SDO | GND → dirección 0x76 (3V3 → 0x77) |
-| CSB | 3V3 (modo I²C) |
+| Sensor musgo (1321v) AOUT | `D34` |
+| RGB 1 (musgo) R/G/B · común(+) | `D25/D26/D14` · `D27` |
+| RGB 2 (aire) R/G/B · común | `D2/D4/D16` · GND |
+| Bicolor (alerta) rojo/amarillo · común | `D5/D18` · GND |
+| Buzzer | `D22` |
+| BMP280/BME280 + Si7021 (I²C) SDA/SCL | `D19/D21` |
 
-> El I²C usa 21/19 a propósito para no chocar con el buzzer (GPIO22). Requiere las
-> librerías **Adafruit BMP280** + **Adafruit Unified Sensor**. Para humedad del aire usa un
-> **BME280** (mismo cableado; ver comentario en el sketch).
+Librerías Arduino: **Adafruit BMP280**, **Adafruit BME280**, **Adafruit Si7021**, **Adafruit Unified Sensor**.
 
-📐 **Esquemático completo de todas las conexiones:** ver **[CONEXIONES.md](CONEXIONES.md)**
-(también disponible en el dashboard → pestaña *Cómo funciona* → *Explicación técnica*).
+📐 **Esquemático completo, tabla de pines y notas:** ver **[CONEXIONES.md](CONEXIONES.md)**
+(también en el dashboard → *Cómo funciona* → *Explicación técnica*).
 
 ---
 
