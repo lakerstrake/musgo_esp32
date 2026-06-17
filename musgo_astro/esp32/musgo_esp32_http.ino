@@ -179,7 +179,7 @@ bool medirAire(uint8_t cmd, float &valor, bool esTemp){
   Wire.beginTransmission(AIRE_ADDR);
   Wire.write(cmd);
   if(Wire.endTransmission()!=0) return false;
-  delay(30);                                   // espera la conversion (~12-23 ms)
+  delay(55);                                   // espera conversion (temp 14-bit ~50 ms)
   if(Wire.requestFrom(AIRE_ADDR,(uint8_t)3) < 2) return false;
   uint16_t raw = ((uint16_t)Wire.read()<<8) | Wire.read();
   if(Wire.available()) Wire.read();            // checksum (ignorado)
@@ -259,7 +259,9 @@ void loop(){
   // Cada sensor toma su medida por separado (cada 1 s)
   if((bmpOK||si7021OK) && ahora-tBmp>=1000){
     tBmp=ahora;
-    if(si7021OK){ float t,h; if(medirAire(0xF3,t,true))tempSi=t; if(medirAire(0xF5,h,false))airHum=h; }
+    if(si7021OK){ static bool leerT=true; float v;   // lectura alternada (1 por ciclo, no traba)
+      if(leerT){ if(medirAire(0xF3,v,true)) tempSi=v; } else { if(medirAire(0xF5,v,false)) airHum=v; }
+      leerT=!leerT; }
     if(bmpOK){
       if(usandoBme){ tempBmp=bme.readTemperature(); presionHpa=bme.readPressure()/100.0f; if(!si7021OK) airHum=bme.readHumidity(); }
       else        { tempBmp=bmp.readTemperature(); presionHpa=bmp.readPressure()/100.0f; }
