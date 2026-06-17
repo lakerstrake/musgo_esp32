@@ -141,9 +141,11 @@ void enviarDato(float h,int estado,int crudo){
   p += "\"state\":"+String(estado)+",";
   p += "\"raw\":"+String(crudo)+",";
   p += "\"rssi\":"+String(WiFi.RSSI())+",";
-  if(si7021OK){ p += "\"tempSi\":"+String(tempSi,1)+","; p += "\"airHum\":"+String(airHum,0)+","; }
-  if(bmpOK){ p += "\"tempBmp\":"+String(tempBmp,1)+","; p += "\"pressure\":"+String(presionHpa,1)+","; }
-  if(!si7021OK && usandoBme){ p += "\"airHum\":"+String(airHum,0)+","; }
+  if(si7021OK && !isnan(tempSi))     p += "\"tempSi\":"+String(tempSi,1)+",";
+  if(si7021OK && !isnan(airHum))     p += "\"airHum\":"+String(airHum,0)+",";
+  if(bmpOK && !isnan(tempBmp))       p += "\"tempBmp\":"+String(tempBmp,1)+",";
+  if(bmpOK && !isnan(presionHpa))    p += "\"pressure\":"+String(presionHpa,1)+",";
+  if(!si7021OK && usandoBme && !isnan(airHum)) p += "\"airHum\":"+String(airHum,0)+",";
   p += "\"device\":\""+String(deviceId)+"\",";
   p += "\"ts\":"+String(millis())+"}";
 
