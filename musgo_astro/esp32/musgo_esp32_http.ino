@@ -33,8 +33,10 @@ const int BI_ROJO = 5, BI_AMARILLO = 18;
 const int PIN_BUZZER = 22;
 #define USAR_TONO true                      // buzzer pasivo (tonos)
 
-// I2C (BMP280/BME280 + Si7021):  SDA=D19, SCL=D21
+// I2C bus 1 (BMP280/BME280):  SDA=D19, SCL=D21
 const int PIN_SDA = 19, PIN_SCL = 21;
+// I2C bus 2 (Si7021, en pines separados):  SDA=D32, SCL=D33
+const int PIN_SDA2 = 32, PIN_SCL2 = 33;
 
 // ===================== Calibración del musgo =====================
 const int CAL_SECO_DEF = 2515, CAL_HUMEDO_DEF = 1128;
@@ -93,11 +95,13 @@ void rgb2(int r,int g,int b){ wr(RGB2_R,r,RGB2_ANODO); wr(RGB2_G,g,RGB2_ANODO); 
 void colorHumedad(int h,int &r,int &g,int &b){
   if(h<50){ r=255; g=map(h,0,50,0,180); b=0; } else { r=map(h,50,100,180,0); g=255; b=0; }
 }
-// Bicolor segun temperatura del BMP280: frio->apagado, templado->amarillo, calido->rojo
+// Bicolor segun temperatura del BMP280 (siempre uno encendido si el sensor responde):
+//   < 25 C -> amarillo ,  >= 25 C -> rojo
 void bicolorTemp(float t){
-  bool hot = (!isnan(t) && t >= 28), warm = (!isnan(t) && t >= 22);
+  if(isnan(t)){ digitalWrite(BI_ROJO,LOW); digitalWrite(BI_AMARILLO,LOW); return; }
+  bool hot = t >= 25;
   digitalWrite(BI_ROJO,     hot ? HIGH : LOW);
-  digitalWrite(BI_AMARILLO, (!hot && warm) ? HIGH : LOW);
+  digitalWrite(BI_AMARILLO, hot ? LOW  : HIGH);
 }
 // Test de color al arranque: cada modulo muestra ROJO, VERDE, AZUL (mira y compara)
 void testColor(){
@@ -165,8 +169,9 @@ void setup(){
 
   analogReadResolution(12); analogSetPinAttenuation(PIN_SENSOR,ADC_11db);
 
-  Wire.begin(PIN_SDA,PIN_SCL);
-  si7021OK = si.begin();
+  Wire.begin(PIN_SDA,PIN_SCL);          // bus 1 -> BMP280/BME280
+  Wire1.begin(PIN_SDA2,PIN_SCL2);       // bus 2 -> Si7021 (separado)
+  si7021OK = si.begin(&Wire1);
   if(bme.begin(0x76)||bme.begin(0x77)){ usandoBme=true; bmpOK=true; }
   else if(bmp.begin(0x76)||bmp.begin(0x77)){ bmpOK=true;
     bmp.setSampling(Adafruit_BMP280::MODE_NORMAL,Adafruit_BMP280::SAMPLING_X2,
