@@ -18,16 +18,23 @@ const char* deviceId  = "musgo-01";
 // ===================== Pines =====================
 const int PIN_SENSOR = 34;                 // sensor humedad del musgo (AOUT)
 
+// --- Polaridad de cada modulo LED ---
+//   false = CATODO comun (comun a GND, enciende con HIGH)
+//   true  = ANODO  comun (comun a 3V3, enciende con LOW)  <- "al contrario"
+// En el test de arranque hay un paso "APAGADO": el modulo que quede ENCENDIDO
+// ahi tiene la polaridad invertida -> cambia su flag (false <-> true).
+
 // RGB 1  -> caja del MUSGO (humedad del suelo)
 int RGB1_R = 25, RGB1_G = 26, RGB1_B = 14;
-bool RGB1_ANODO = false;                    // false = catodo comun (comun a GND)
+bool RGB1_ANODO = false;
 
-// RGB 2  -> caja del Si7021 (humedad del AIRE)
+// RGB 2  -> caja del aire (Si7021/HTU21D)
 int RGB2_R = 2,  RGB2_G = 4,  RGB2_B = 16;
 bool RGB2_ANODO = false;
 
 // Bicolor rojo/amarillo -> caja del BMP280 (temperatura ambiente)
 const int BI_ROJO = 5, BI_AMARILLO = 18;
+bool BI_ANODO = false;
 
 // Buzzer de 3 patas:  S (signal) -> D22 ,  + (medio) -> 3V3 ,  − -> GND
 const int PIN_BUZZER = 22;
@@ -94,26 +101,31 @@ void rgb2(int r,int g,int b){ wr(RGB2_R,r,RGB2_ANODO); wr(RGB2_G,g,RGB2_ANODO); 
 void colorHumedad(int h,int &r,int &g,int &b){
   if(h<50){ r=255; g=map(h,0,50,0,180); b=0; } else { r=map(h,50,100,180,0); g=255; b=0; }
 }
+// Enciende/apaga un pin del bicolor respetando su polaridad
+void biPin(int pin,bool on){ digitalWrite(pin, (on ^ BI_ANODO) ? HIGH : LOW); }
 // Bicolor segun temperatura del BMP280 (siempre uno encendido si el sensor responde):
 //   < 25 C -> amarillo ,  >= 25 C -> rojo
 void bicolorTemp(float t){
-  if(isnan(t)){ digitalWrite(BI_ROJO,LOW); digitalWrite(BI_AMARILLO,LOW); return; }
+  if(isnan(t)){ biPin(BI_ROJO,false); biPin(BI_AMARILLO,false); return; }
   bool hot = t >= 25;
-  digitalWrite(BI_ROJO,     hot ? HIGH : LOW);
-  digitalWrite(BI_AMARILLO, hot ? LOW  : HIGH);
+  biPin(BI_ROJO, hot);
+  biPin(BI_AMARILLO, !hot);
 }
 // Test de color al arranque: cada modulo muestra ROJO, VERDE, AZUL (mira y compara)
 void testColor(){
-  Serial.println("[LED] Test: cada modulo hara ROJO -> VERDE -> AZUL");
-  int paso = 500;
+  Serial.println("[LED] Test: ROJO, VERDE, AZUL y APAGADO en cada modulo");
+  int paso = 450;
   Serial.println("[LED] RGB1 ROJO");  rgb1(255,0,0); delay(paso);
   Serial.println("[LED] RGB1 VERDE"); rgb1(0,255,0); delay(paso);
-  Serial.println("[LED] RGB1 AZUL");  rgb1(0,0,255); delay(paso); rgb1(0,0,0);
+  Serial.println("[LED] RGB1 AZUL");  rgb1(0,0,255); delay(paso);
+  Serial.println("[LED] RGB1 APAGADO (si queda encendido -> cambia RGB1_ANODO)"); rgb1(0,0,0); delay(paso);
   Serial.println("[LED] RGB2 ROJO");  rgb2(255,0,0); delay(paso);
   Serial.println("[LED] RGB2 VERDE"); rgb2(0,255,0); delay(paso);
-  Serial.println("[LED] RGB2 AZUL");  rgb2(0,0,255); delay(paso); rgb2(0,0,0);
-  Serial.println("[LED] Bicolor ROJO");     digitalWrite(BI_ROJO,HIGH);     delay(paso); digitalWrite(BI_ROJO,LOW);
-  Serial.println("[LED] Bicolor AMARILLO"); digitalWrite(BI_AMARILLO,HIGH); delay(paso); digitalWrite(BI_AMARILLO,LOW);
+  Serial.println("[LED] RGB2 AZUL");  rgb2(0,0,255); delay(paso);
+  Serial.println("[LED] RGB2 APAGADO (si queda encendido -> cambia RGB2_ANODO)"); rgb2(0,0,0); delay(paso);
+  Serial.println("[LED] Bicolor ROJO");     biPin(BI_ROJO,true);     delay(paso); biPin(BI_ROJO,false);
+  Serial.println("[LED] Bicolor AMARILLO"); biPin(BI_AMARILLO,true); delay(paso); biPin(BI_AMARILLO,false);
+  Serial.println("[LED] Bicolor APAGADO (si queda encendido -> cambia BI_ANODO)"); delay(paso);
 }
 
 // ===================== Sensor musgo =====================
