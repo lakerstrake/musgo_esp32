@@ -35,11 +35,9 @@ asociado a un solo sensor**:
    + (medio) ──────────┤ 3V3                  │
    − ───────────────────┤ GND                  │
                        │                      │
-  BMP280 (bus I2C 1)   │                      │
-   SDA / SCL ──────────┤ D19 / D21            │  0x76 / 0x77
-  Si7021 (bus I2C 2)   │                      │
-   SDA / SCL ──────────┤ D32 / D33            │  0x40 (separado)
-   VCC / GND ──────────┤ 3V3 / GND            │
+  I2C (bus compartido) │                      │
+   SDA / SCL ──────────┤ D19 / D21            │  BMP280 0x76/0x77
+   VCC / GND ──────────┤ 3V3 / GND            │  Si7021 0x40
                        └──────────────────────┘
 ```
 
@@ -52,8 +50,7 @@ asociado a un solo sensor**:
 | RGB 2 (aire) | R / G / B · común(−) | **D2 / D4 / D16** · GND |
 | Bicolor (temp BMP280) | rojo / amarillo · común(−) | **D5 / D18** · GND |
 | Buzzer 3 patas | **S** / **+** / **−** | **D22** / 3V3 / GND |
-| BMP280/BME280 (bus 1) | SDA / SCL | **D19 / D21** |
-| Si7021 (bus 2, separado) | SDA / SCL | **D32 / D33** |
+| BMP280/BME280 + Si7021 | SDA / SCL | **D19 / D21** (mismo bus I²C) |
 
 ## Notas / correcciones importantes
 
@@ -64,16 +61,17 @@ asociado a un solo sensor**:
   según lo que veas. Si un módulo enciende “al revés” (apagado = encendido), cambia su
   `RGB1_ANODO`/`RGB2_ANODO` a `true`.
 
-- **🔧 Temperatura corrupta (corregido):** BMP280 en **SDA=D19, SCL=D21**. Si salía 140 °C
+- **🔧 Temperatura corrupta (corregido):** I²C en **SDA=D19, SCL=D21**. Si salía 140 °C
   era por SDA/SCL cruzados.
 
-- **🔧 Sensores en buses separados:** el **Si7021 se movió a su propio bus I²C**
-  (**SDA=D32, SCL=D33**) para que cada sensor funcione independiente. **Rewirea el Si7021**
-  a D32/D33 (antes estaba en D19/D21). El BMP280 se queda en D19/D21.
+- **🔧 BMP280 y Si7021 en el MISMO bus I²C (D19/D21):** es lo correcto en I²C — cada uno
+  tiene su dirección (BMP280 0x76/0x77, Si7021 0x40) y conviven sin separar pines. Al
+  arrancar, el firmware imprime un **escáner I²C** (`[I2C] Dispositivos: 0x40 0x76`); si
+  falta alguno, revisa su cableado (SDA/SCL, 3V3, GND) y los pull-ups del módulo.
 
-- **🔧 LEDs que no encendían operando (corregido):** RGB2 enciende con el Si7021 y el
-  bicolor siempre muestra un color con el BMP280 (amarillo/rojo). Si un LED sigue apagado,
-  su sensor no está siendo detectado (míralo en el Monitor Serie: “Si7021: OK/no”).
+- **🔧 LEDs que no encendían operando (corregido):** el bicolor siempre muestra un color con
+  el BMP280 (🟡<25 °C / 🔴≥25 °C) y RGB2 enciende con el Si7021. Si un LED sigue apagado,
+  su sensor no aparece en el escáner I²C.
 
 - **🔊 Buzzer de 3 patas:** S→**D22**, + (pata del medio)→**3V3**, −→**GND**. Es pasivo:
   reproduce tonos. Al encender toca la **Marcha Imperial de Star Wars** 🎵 (y también
@@ -91,6 +89,6 @@ asociado a un solo sensor**:
 ```
 D34 → Musgo (AOUT)         D2/D4/D16 → RGB2 (aire)
 D25/D26/D14 → RGB1 (musgo)    D5/D18 → Bicolor (temp)
-D22 → Buzzer (S)           D19/D21 → BMP280 (I2C bus 1)
-D32/D33 → Si7021 (I2C bus 2)   comunes → GND · buzzer + → 3V3
+D22 → Buzzer (S)           D19/D21 → I2C: BMP280 + Si7021
+comunes RGB/bicolor → GND  ·  buzzer + → 3V3
 ```

@@ -307,8 +307,8 @@ const DASHBOARD_HTML = `<!doctype html>
       <h2>🔌 Conexiones</h2>
 <pre class="schem">  Musgo AOUT ─ D34        RGB1 ─ D25/26/14 (musgo)
   RGB2 ─ D2/4/16 (aire)   Bicolor ─ D5/18 (temp)
-  Buzzer S ─ D22          BMP280 I2C ─ D19/D21
-  Si7021 I2C ─ D32/D33    comunes ─ GND</pre>
+  Buzzer S ─ D22          I2C ─ D19/D21
+  (BMP280 0x76 + Si7021 0x40)   comunes ─ GND</pre>
       <p>Esquemático completo en <code>CONEXIONES.md</code>.</p>
     </div>
   </section>

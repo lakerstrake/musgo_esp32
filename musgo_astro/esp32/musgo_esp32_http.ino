@@ -33,10 +33,9 @@ const int BI_ROJO = 5, BI_AMARILLO = 18;
 const int PIN_BUZZER = 22;
 #define USAR_TONO true                      // buzzer pasivo (tonos)
 
-// I2C bus 1 (BMP280/BME280):  SDA=D19, SCL=D21
+// I2C (bus compartido por BMP280/BME280 + Si7021):  SDA=D19, SCL=D21
+// En I2C ambos conviven: BMP280=0x76/0x77, Si7021=0x40 (direcciones distintas).
 const int PIN_SDA = 19, PIN_SCL = 21;
-// I2C bus 2 (Si7021, en pines separados):  SDA=D32, SCL=D33
-const int PIN_SDA2 = 32, PIN_SCL2 = 33;
 
 // ===================== Calibración del musgo =====================
 const int CAL_SECO_DEF = 2515, CAL_HUMEDO_DEF = 1128;
@@ -158,6 +157,14 @@ void enviarDato(float h,int estado,int crudo){
   http.end();
 }
 
+// Escanea el bus I2C e imprime las direcciones encontradas (diagnostico)
+void escanearI2C(){
+  Serial.print("[I2C] Dispositivos:");
+  byte n=0;
+  for(byte a=1;a<127;a++){ Wire.beginTransmission(a); if(Wire.endTransmission()==0){ Serial.print(" 0x"); Serial.print(a,HEX); n++; } }
+  Serial.println(n==0 ? " NINGUNO (revisa SDA=D19, SCL=D21, GND y 3V3)" : "");
+}
+
 // ===================== Setup =====================
 void setup(){
   Serial.begin(115200); delay(300);
@@ -169,9 +176,9 @@ void setup(){
 
   analogReadResolution(12); analogSetPinAttenuation(PIN_SENSOR,ADC_11db);
 
-  Wire.begin(PIN_SDA,PIN_SCL);          // bus 1 -> BMP280/BME280
-  Wire1.begin(PIN_SDA2,PIN_SCL2);       // bus 2 -> Si7021 (separado)
-  si7021OK = si.begin(&Wire1);
+  Wire.begin(PIN_SDA,PIN_SCL);          // bus I2C compartido
+  escanearI2C();                        // diagnostico: imprime direcciones detectadas
+  si7021OK = si.begin();                // Si7021 (0x40)
   if(bme.begin(0x76)||bme.begin(0x77)){ usandoBme=true; bmpOK=true; }
   else if(bmp.begin(0x76)||bmp.begin(0x77)){ bmpOK=true;
     bmp.setSampling(Adafruit_BMP280::MODE_NORMAL,Adafruit_BMP280::SAMPLING_X2,

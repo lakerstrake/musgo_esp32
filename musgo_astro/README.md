@@ -21,8 +21,7 @@ ESP32 ──HTTPS POST /api/data──▶ Cloudflare Worker (API + dashboard) �
 | RGB 2 (aire/Si7021) R/G/B · común | `D2/D4/D16` · GND |
 | Bicolor (temp/BMP280) rojo/amarillo · común | `D5/D18` · GND |
 | Buzzer 3 patas S / + / − | `D22` / 3V3 / GND |
-| BMP280/BME280 (I²C bus 1) SDA/SCL | `D19/D21` |
-| Si7021 (I²C bus 2, separado) SDA/SCL | `D32/D33` |
+| BMP280/BME280 + Si7021 (I²C, mismo bus) SDA/SCL | `D19/D21` |
 
 Cada LED indica un sensor. El buzzer toca la *Marcha Imperial* al encender y al llegar a HÚMEDO.
 
