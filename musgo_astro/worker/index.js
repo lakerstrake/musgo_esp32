@@ -257,7 +257,7 @@ const DASHBOARD_HTML = `<!doctype html>
       <svg class="chart" id="chAir" viewBox="0 0 300 56" preserveAspectRatio="none"></svg>
       <div class="chartrange"><span id="rAirA">—</span><span id="rAirB">—</span></div>
     </div>
-    <div class="src">Sensor <b>Si7021</b> · si dice “—”, no está detectado</div>
+    <div class="src">Sensor de aire (<b>Si7021/HTU21D</b>) · si dice “—”, no detectado</div>
   </section>
 
   <!-- ===== Ambiente (BMP280) ===== -->
