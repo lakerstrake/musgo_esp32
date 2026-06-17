@@ -165,6 +165,17 @@ void escanearI2C(){
   Serial.println(n==0 ? " NINGUNO (revisa SDA=D19, SCL=D21, GND y 3V3)" : "");
 }
 
+// (Re)intenta inicializar los sensores I2C que aun no respondan
+void reintentarSensores(){
+  if(!si7021OK) si7021OK = si.begin();
+  if(!bmpOK){
+    if(bme.begin(0x76)||bme.begin(0x77)){ usandoBme=true; bmpOK=true; }
+    else if(bmp.begin(0x76)||bmp.begin(0x77)){ bmpOK=true;
+      bmp.setSampling(Adafruit_BMP280::MODE_NORMAL,Adafruit_BMP280::SAMPLING_X2,
+                      Adafruit_BMP280::SAMPLING_X16,Adafruit_BMP280::FILTER_X16,Adafruit_BMP280::STANDBY_MS_500); }
+  }
+}
+
 // ===================== Setup =====================
 void setup(){
   Serial.begin(115200); delay(300);
@@ -178,11 +189,7 @@ void setup(){
 
   Wire.begin(PIN_SDA,PIN_SCL);          // bus I2C compartido
   escanearI2C();                        // diagnostico: imprime direcciones detectadas
-  si7021OK = si.begin();                // Si7021 (0x40)
-  if(bme.begin(0x76)||bme.begin(0x77)){ usandoBme=true; bmpOK=true; }
-  else if(bmp.begin(0x76)||bmp.begin(0x77)){ bmpOK=true;
-    bmp.setSampling(Adafruit_BMP280::MODE_NORMAL,Adafruit_BMP280::SAMPLING_X2,
-                    Adafruit_BMP280::SAMPLING_X16,Adafruit_BMP280::FILTER_X16,Adafruit_BMP280::STANDBY_MS_500); }
+  reintentarSensores();                 // BMP280 (0x76/77) + Si7021 (0x40)
 
   Serial.println("=== Musgo que respira ===");
   Serial.println(String("Si7021: ")+(si7021OK?"OK":"no")+"   Presion: "+(bmpOK?(usandoBme?"BME280":"BMP280"):"no"));
@@ -205,6 +212,15 @@ void loop(){
 
   static unsigned long tRec=0;
   if(WiFi.status()!=WL_CONNECTED && ahora-tRec>=5000){ tRec=ahora; WiFi.disconnect(); WiFi.begin(ssid); }
+
+  // Diagnostico + reintento de sensores I2C cada 5s mientras falte alguno
+  static unsigned long tDiag=0;
+  if((!si7021OK || !bmpOK) && ahora-tDiag>=5000){
+    tDiag=ahora;
+    escanearI2C();
+    reintentarSensores();
+    Serial.println(String("[SENSORES] Si7021=")+(si7021OK?"OK":"NO")+"  BMP/BME="+(bmpOK?"OK":"NO"));
+  }
 
   // Cada sensor toma su medida por separado (cada 1 s)
   if((bmpOK||si7021OK) && ahora-tBmp>=1000){
