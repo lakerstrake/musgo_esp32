@@ -171,21 +171,46 @@ void enviarDato(float h,int estado,int crudo){
   http.end();
 }
 
-// ---- Sensor de humedad/temp del aire por I2C directo (0x40): Si7021/HTU21D/SHT21 ----
+// ---- Sensor de aire por I2C directo en 0x40 (auto-detecta el chip) ----
+//   chipAire 1 = Si7021/HTU21D/SHT21 (comandos 0xF3/0xF5)
+//   chipAire 2 = HDC1080 (punteros de registro 0x00/0x01)
 const uint8_t AIRE_ADDR = 0x40;
+int8_t chipAire = 0;
 bool probarAire(){ Wire.beginTransmission(AIRE_ADDR); return Wire.endTransmission()==0; }
-// cmd 0xF3 = temperatura, 0xF5 = humedad (modo "no hold master", comun a los 3 chips)
-bool medirAire(uint8_t cmd, float &valor, bool esTemp){
-  Wire.beginTransmission(AIRE_ADDR);
-  Wire.write(cmd);
+
+bool rawSi7021(uint8_t cmd, uint16_t &raw){
+  Wire.beginTransmission(AIRE_ADDR); Wire.write(cmd);
   if(Wire.endTransmission()!=0) return false;
-  delay(55);                                   // espera conversion (temp 14-bit ~50 ms)
+  delay(55);
   if(Wire.requestFrom(AIRE_ADDR,(uint8_t)3) < 2) return false;
-  uint16_t raw = ((uint16_t)Wire.read()<<8) | Wire.read();
-  if(Wire.available()) Wire.read();            // checksum (ignorado)
-  raw &= ~0x0003;                              // limpia bits de estado
-  if(esTemp) valor = -46.85 + 175.72 * raw / 65536.0;
-  else { valor = -6.0 + 125.0 * raw / 65536.0; if(valor<0)valor=0; if(valor>100)valor=100; }
+  raw = ((uint16_t)Wire.read()<<8)|Wire.read(); if(Wire.available()) Wire.read();
+  raw &= ~0x0003; return true;
+}
+bool rawHDC(uint8_t ptr, uint16_t &raw){
+  Wire.beginTransmission(AIRE_ADDR); Wire.write(ptr);
+  if(Wire.endTransmission()!=0) return false;
+  delay(20);
+  if(Wire.requestFrom(AIRE_ADDR,(uint8_t)2) < 2) return false;
+  raw = ((uint16_t)Wire.read()<<8)|Wire.read(); return true;
+}
+void detectarChipAire(){
+  uint16_t id;
+  if(rawHDC(0xFF, id) && id==0x1050){           // Device ID del HDC1080
+    chipAire=2;
+    Wire.beginTransmission(AIRE_ADDR); Wire.write(0x02); Wire.write(0x00); Wire.write(0x00); Wire.endTransmission();
+    Serial.println("[AIRE] chip = HDC1080");
+  } else { chipAire=1; Serial.println("[AIRE] chip = Si7021/HTU21D"); }
+}
+bool medirAire(bool esTemp, float &valor){
+  uint16_t raw;
+  if(chipAire==2){
+    if(!rawHDC(esTemp?0x00:0x01, raw)) return false;
+    valor = esTemp ? (raw/65536.0*165.0 - 40.0) : (raw/65536.0*100.0);
+  } else {
+    if(!rawSi7021(esTemp?0xF3:0xF5, raw)) return false;
+    valor = esTemp ? (-46.85 + 175.72*raw/65536.0) : (-6.0 + 125.0*raw/65536.0);
+  }
+  if(!esTemp) valor = constrain(valor, 0, 100);
   return true;
 }
 
@@ -199,7 +224,7 @@ void escanearI2C(){
 
 // (Re)intenta inicializar los sensores I2C que aun no respondan
 void reintentarSensores(){
-  if(!si7021OK) si7021OK = probarAire();   // detecta el sensor de aire por ACK en 0x40
+  if(!si7021OK){ si7021OK = probarAire(); if(si7021OK && chipAire==0) detectarChipAire(); }
   if(!bmpOK){
     if(bme.begin(0x76)||bme.begin(0x77)){ usandoBme=true; bmpOK=true; }
     else if(bmp.begin(0x76)||bmp.begin(0x77)){ bmpOK=true;
@@ -260,7 +285,7 @@ void loop(){
   if((bmpOK||si7021OK) && ahora-tBmp>=1000){
     tBmp=ahora;
     if(si7021OK){ static bool leerT=true; float v;   // lectura alternada (1 por ciclo, no traba)
-      if(leerT){ if(medirAire(0xF3,v,true)) tempSi=v; } else { if(medirAire(0xF5,v,false)) airHum=v; }
+      if(leerT){ if(medirAire(true,v)) tempSi=v; } else { if(medirAire(false,v)) airHum=v; }
       leerT=!leerT; }
     if(bmpOK){
       if(usandoBme){ tempBmp=bme.readTemperature(); presionHpa=bme.readPressure()/100.0f; if(!si7021OK) airHum=bme.readHumidity(); }
