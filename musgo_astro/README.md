@@ -17,11 +17,13 @@ ESP32 ──HTTPS POST /api/data──▶ Cloudflare Worker (API + dashboard) �
 | Módulo | ESP32 |
 |---|---|
 | Sensor musgo (1321v) AOUT | `D34` |
-| RGB 1 (musgo) R/G/B · común(+) | `D25/D26/D14` · `D27` |
-| RGB 2 (aire) R/G/B · común | `D2/D4/D16` · GND |
-| Bicolor (alerta) rojo/amarillo · común | `D5/D18` · GND |
-| Buzzer | `D22` |
+| RGB 1 (musgo) R/G/B · común | `D25/D26/D14` · GND |
+| RGB 2 (aire/Si7021) R/G/B · común | `D2/D4/D16` · GND |
+| Bicolor (temp/BMP280) rojo/amarillo · común | `D5/D18` · GND |
+| Buzzer 3 patas S / + / − | `D22` / 3V3 / GND |
 | BMP280/BME280 + Si7021 (I²C) SDA/SCL | `D19/D21` |
+
+Cada LED indica un sensor. El buzzer toca la *Marcha Imperial* al encender y al llegar a HÚMEDO.
 
 Librerías Arduino: **Adafruit BMP280**, **Adafruit BME280**, **Adafruit Si7021**, **Adafruit Unified Sensor**.
 

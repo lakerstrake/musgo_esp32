@@ -49,9 +49,11 @@ function normalizeReading(body) {
     state: [0, 1, 2].includes(state) ? state : null,
     raw: num(body.raw),
     rssi: num(body.rssi),
-    temp: f1(body.temp),          // °C (BMP280, opcional)
-    pressure: f1(body.pressure),  // hPa (BMP280, opcional)
-    airHum: num(body.airHum),     // % humedad del aire (BME280, opcional)
+    tempSi: f1(body.tempSi),                                  // °C (Si7021)
+    tempBmp: f1(body.tempBmp),                                // °C (BMP280/BME280)
+    temp: f1(body.tempSi !== undefined ? body.tempSi : body.tempBmp), // unificada (graficas)
+    pressure: f1(body.pressure),                             // hPa (BMP280)
+    airHum: num(body.airHum),                               // % humedad del aire (Si7021/BME280)
     device: typeof body.device === 'string' ? body.device.slice(0, 32) : 'esp32',
     uptime: num(body.ts),
     ts: Date.now(),
@@ -189,6 +191,11 @@ const DASHBOARD_HTML = `<!doctype html>
   .legend{display:flex;gap:8px;margin-top:14px}
   .chip{flex:1;text-align:center;font-size:11px;color:var(--muted);border:1px solid var(--line);border-radius:9px;padding:8px 4px}
   .chip b{display:block;font-size:12px;margin-bottom:2px}
+  .sensors{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:16px}
+  .sc{background:var(--panel2);border:1px solid var(--line);border-radius:11px;padding:11px 12px}
+  .scl{font-size:11px;color:var(--muted)}
+  .scv{font-size:21px;font-weight:700;margin-top:3px;line-height:1}
+  .scs{font-size:10px;color:var(--muted);margin-top:3px}
   /* Calibrar */
   .readout{display:flex;gap:10px;margin-bottom:16px}
   .ro{flex:1;text-align:center;background:var(--panel2);border:1px solid var(--line);border-radius:11px;padding:12px 8px}
@@ -262,17 +269,13 @@ const DASHBOARD_HTML = `<!doctype html>
       <div id="subline" class="sub">&nbsp;</div>
     </div>
     <div class="spark" id="spark"></div>
-    <div class="readout hidden" id="env" style="margin-top:16px">
-      <div class="ro"><span>🌡️ Temperatura</span><b id="temp">—</b></div>
-      <div class="ro"><span>⏱️ Presión</span><b id="pres">—</b></div>
-      <div class="ro hidden" id="airBox"><span>💧 Hum. aire</span><b id="air">—</b></div>
+    <div class="sensors">
+      <div class="sc"><div class="scl">🌡️ Temperatura</div><div class="scv" id="tSi">—</div><div class="scs">Si7021</div></div>
+      <div class="sc"><div class="scl">💨 Humedad aire</div><div class="scv" id="aHum">—</div><div class="scs">Si7021</div></div>
+      <div class="sc"><div class="scl">⏱️ Presión</div><div class="scv" id="pres">—</div><div class="scs">BMP280</div></div>
+      <div class="sc"><div class="scl">🌡️ Temp ambiente</div><div class="scv" id="tBmp">—</div><div class="scs">BMP280</div></div>
     </div>
-    <div class="meta"><span>Última lectura</span><span id="ago">—</span></div>
-    <div class="legend">
-      <div class="chip" style="border-color:#3a2420"><b style="color:var(--seco)">SECO</b>&lt; 30 %</div>
-      <div class="chip" style="border-color:#3a3120"><b style="color:var(--medio)">MEDIO</b>30 – 60 %</div>
-      <div class="chip" style="border-color:#20381f"><b style="color:var(--humedo)">HÚMEDO</b>&gt; 60 %</div>
-    </div>
+    <div class="meta"><span id="devLabel">—</span><span id="ago">—</span></div>
   </section>
 
   <!-- ===== Historial ===== -->
@@ -411,23 +414,23 @@ const DASHBOARD_HTML = `<!doctype html>
               ┌───────────────┐
   Musgo AOUT ─┤ D34           │
   RGB1 R/G/B ─┤ D25/D26/D14   │  musgo
-  RGB1 común ─┤ D27 (+)       │
-  RGB2 R/G/B ─┤ D2/D4/D16     │  aire
-  Bicolor R/Y─┤ D5/D18        │  alerta
-  Buzzer + ───┤ D22           │
+  RGB2 R/G/B ─┤ D2/D4/D16     │  aire (Si7021)
+  Bicolor R/Y─┤ D5/D18        │  temp (BMP280)
+  Buzzer S ───┤ D22           │  (+→3V3, −→GND)
   I2C SDA/SCL─┤ D19/D21       │  BMP280/BME280
               │               │  + Si7021
+   comunes ───┤ GND           │
               └───────────────┘</pre>
       <table>
         <tr><th>Componente</th><th>Conexión a la ESP32</th></tr>
         <tr><td><b>Sensor musgo</b></td><td>AOUT→<code>D34</code> · VCC/GND</td></tr>
-        <tr><td><b>RGB 1</b> (musgo)</td><td>R/G/B→<code>D25/D26/D14</code> · común(+)→<code>D27</code></td></tr>
+        <tr><td><b>RGB 1</b> (musgo)</td><td>R/G/B→<code>D25/D26/D14</code> · común→GND</td></tr>
         <tr><td><b>RGB 2</b> (aire)</td><td>R/G/B→<code>D2/D4/D16</code> · común→GND</td></tr>
-        <tr><td><b>Bicolor</b> (alerta)</td><td>rojo→<code>D5</code> · amarillo→<code>D18</code> · común→GND</td></tr>
-        <tr><td><b>Buzzer</b></td><td>+→<code>D22</code> · −→GND</td></tr>
+        <tr><td><b>Bicolor</b> (temp)</td><td>rojo→<code>D5</code> · amarillo→<code>D18</code> · común→GND</td></tr>
+        <tr><td><b>Buzzer</b> (3 patas)</td><td>S→<code>D22</code> · +→3V3 · −→GND</td></tr>
         <tr><td><b>BMP280 + Si7021</b></td><td>SDA→<code>D19</code> · SCL→<code>D21</code> (I²C)</td></tr>
       </table>
-      <p style="margin-top:8px">Esquemático completo y notas en <code>CONEXIONES.md</code>. RGB 1 es ánodo común; RGB 2 y bicolor, cátodo común.</p>
+      <p style="margin-top:8px">Cada LED indica un sensor (musgo / aire / temperatura). Esquemático completo y notas en <code>CONEXIONES.md</code>.</p>
     </div>
   </section>
 
@@ -506,6 +509,7 @@ function nivel(t){
   $('subTec').classList.toggle('on',t==='tec');
 }
 function drawSpark(){var s=$('spark');s.innerHTML='';hist.slice(-44).forEach(function(h){var b=document.createElement('div');b.style.height=Math.max(2,h)+'%';b.style.background=colorFor(h).color;s.appendChild(b)})}
+function setVal(id,v,unit,dec){ var e=$(id); if(!e)return; e.textContent=(typeof v==='number')?((dec?v.toFixed(dec):Math.round(v))+unit):'—'; }
 function tick(){
   fetch('/api/data',{cache:'no-store'}).then(function(r){if(!r.ok)throw 0;return r.json()}).then(function(j){
     setOnline(true);
@@ -518,18 +522,15 @@ function tick(){
       $('estado').style.color=stale?'#8b98a5':st.color;
       $('orb').style.background='radial-gradient(circle at 50% 38%,'+st.color+'2e,#0b1812)';
       $('orb').style.boxShadow=stale?'none':'0 0 34px 6px '+st.color+'55';
-      var bits=[];
-      if(currentRaw!=null)bits.push('ADC '+currentRaw);
-      if(typeof j.rssi==='number')bits.push('señal '+j.rssi+' dBm');
-      if(j.device)bits.push(j.device);
-      $('subline').textContent=bits.join('  ·  ')||'\\u00a0';
+      $('subline').textContent=(currentRaw!=null?'· ADC '+currentRaw:'');
       $('rawNow').textContent=currentRaw!=null?currentRaw:'—';
       $('humNow').textContent=h+' %';
-      var hasEnv=(typeof j.temp==='number')||(typeof j.pressure==='number');
-      $('env').classList.toggle('hidden',!hasEnv);
-      if(typeof j.temp==='number')$('temp').textContent=j.temp.toFixed(1)+' °C';
-      if(typeof j.pressure==='number')$('pres').textContent=Math.round(j.pressure)+' hPa';
-      if(typeof j.airHum==='number'){$('airBox').classList.remove('hidden');$('air').textContent=j.airHum+' %'}
+      var dev=[]; if(j.device)dev.push(j.device); if(typeof j.rssi==='number')dev.push('señal '+j.rssi+' dBm');
+      $('devLabel').textContent=dev.join(' · ')||'—';
+      setVal('tSi', j.tempSi, ' °C', 1);
+      setVal('aHum', j.airHum, ' %', 0);
+      setVal('pres', j.pressure, ' hPa', 0);
+      setVal('tBmp', j.tempBmp, ' °C', 1);
       if(j.ts!==lastTs){lastTs=j.ts||Date.now();hist.push(h);if(hist.length>140)hist.shift();drawSpark();pushLive(j);if(!$('hist').classList.contains('hidden'))drawCharts()}
     }else{$('estado').textContent='sin lecturas todavía'}
   }).catch(function(){setOnline(false)});
