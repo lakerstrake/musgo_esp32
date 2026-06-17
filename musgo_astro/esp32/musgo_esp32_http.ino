@@ -187,7 +187,9 @@ void setup(){
 
   analogReadResolution(12); analogSetPinAttenuation(PIN_SENSOR,ADC_11db);
 
-  Wire.begin(PIN_SDA,PIN_SCL);          // bus I2C compartido
+  pinMode(PIN_SDA, INPUT_PULLUP);       // pull-ups internos por si el modulo no los trae
+  pinMode(PIN_SCL, INPUT_PULLUP);
+  Wire.begin(PIN_SDA, PIN_SCL, 100000); // bus I2C compartido a 100 kHz
   escanearI2C();                        // diagnostico: imprime direcciones detectadas
   reintentarSensores();                 // BMP280 (0x76/77) + Si7021 (0x40)
 
